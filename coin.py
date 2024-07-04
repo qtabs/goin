@@ -17,45 +17,45 @@ from pathos.multiprocessing import ProcessingPool
 import collections.abc
 from icecream import ic
 from mycolorpy import colorlist as mcp
-
+import pathlib
 
 
 class GenerativeModel():
-    """
-    Base class for the Explicit and CRF Generative Model classes. Provides for basic methods
-    but it is useless on itself.
+	"""
+	Base class for the Explicit and CRF Generative Model classes. Provides for basic methods
+	but it is useless on itself.
 
 
-    Attributes
-    ----------
-    parset : str or dict
-        as str it identfies a hyperparametrisation compatible with load_pars()
-        as dict it should have fields:
-        	parset['name']: name to identify the hyperpametrisation
-        	parset['pars']: dict with each of the hyperparameters of the generative model
+	Attributes
+	----------
+	parset : str or dict
+		as str it identfies a hyperparametrisation compatible with load_pars()
+		as dict it should have fields:
+			parset['name']: name to identify the hyperpametrisation
+			parset['pars']: dict with each of the hyperparameters of the generative model
 
-    Methods
-    -------
-    export_pars()
-        Returns a dictionary with the current hyperparametrisation
+	Methods
+	-------
+	export_pars()
+		Returns a dictionary with the current hyperparametrisation
 
-    generate_batch(n_trials, batch_size)
-    	Generates a batch of data; each batch corresponds to a different realisation of the COIN
-    	generative model; i.e., same hyperparameters but different parameters
+	generate_batch(n_trials, batch_size)
+		Generates a batch of data; each batch corresponds to a different realisation of the COIN
+		generative model; i.e., same hyperparameters but different parameters
 
-    generate_context_batch(n_trials, batch_size)
-    	Generates a batch of context sequences; when used with the explicit implementation also
-    	returns the ground truth transition probability matrix and global distribution of contexts
+	generate_context_batch(n_trials, batch_size)
+		Generates a batch of context sequences; when used with the explicit implementation also
+		returns the ground truth transition probability matrix and global distribution of contexts
 
-    generate_session(seed, n_trials)
-     	Generates a single data sequence, optionally with a user-specified random seed
+	generate_session(seed, n_trials)
+		Generates a single data sequence, optionally with a user-specified random seed
 
 	sample_observations(contexts, states)
 		Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
 		states x_t^c
 
-    sample_states(contexts)
-    	Generates state dynamics x_t^c given a sequence of contexts
+	sample_states(contexts)
+		Generates state dynamics x_t^c given a sequence of contexts
 
 	estimate_coin(y)
 		Runs the COIN inference algorithm and returns the predictions for the observations hat{y}_t,
@@ -100,11 +100,11 @@ class GenerativeModel():
 		and context global probabilities for sequences with n_trials timepoints and the current 
 		hyperparametrisation.
 
-    """
+	"""
 
 	def __init__(self, parset):
 
-		self.pool = ProcessingPool(32)
+		self.pool = ProcessingPool()
 
 		if type(parset) is str:
 			self.pars   = load_pars(parset)
@@ -125,13 +125,13 @@ class GenerativeModel():
 		self.rho_t   = self.pars['rho_t']
 
 	def export_pars(self):
-	    """Returns a dictionary with the current hyperparametrisation
+		"""Returns a dictionary with the current hyperparametrisation
 
-	    Returns
-	    -------
-	    dict
-	       dict with each of the hyperparameters of the generative model
-	    """
+		Returns
+		-------
+		dict
+		   dict with each of the hyperparameters of the generative model
+		"""
 
 		F = ['si_q','si_r','mu_a','si_a','si_d','gamma_t','gamma_q','rho_t']
 		pars = dict([(field, getattr(self, field)) for field in F])
@@ -140,70 +140,70 @@ class GenerativeModel():
 
 	# Sample generation parameters
 	def _sample_N_(self, mu, si, N=1):
-	    """Samples from a normal distribution
+		"""Samples from a normal distribution
 
-	    Parameters
-	    ----------
-	    mu : float
-	        Mean of the normal distribution
-	    si : float
-	        Standard deviation of the normal distribution
-	    N  : int (optional)
-	    	Number of samples
+		Parameters
+		----------
+		mu : float
+			Mean of the normal distribution
+		si : float
+			Standard deviation of the normal distribution
+		N  : int (optional)
+			Number of samples
 
-	    Returns
-	    -------
-	    np.array
-	       samples
-	    """
+		Returns
+		-------
+		np.array
+		   samples
+		"""
 
 		return np.array(ss.norm.rvs(mu, si, N))
 
 	def _sample_TN_(self, a, b, mu, si, N):
-	    """Samples from a truncated normal distribution
+		"""Samples from a truncated normal distribution
 
-	    Parameters
-	    ----------
-	    a  : float
-	    	low truncation point
-	    b  : float
-	    	high truncation point
-	    mu : float
-	        Mean of the normal distribution before truncation (i.e, location)
-	    si : float
-	        Standard deviation of the normal distribution before truncation (i.e, size)
-	    N  : int (optional)
-	    	Number of samples
+		Parameters
+		----------
+		a  : float
+			low truncation point
+		b  : float
+			high truncation point
+		mu : float
+			Mean of the normal distribution before truncation (i.e, location)
+		si : float
+			Standard deviation of the normal distribution before truncation (i.e, size)
+		N  : int (optional)
+			Number of samples
 
-	    Returns
-	    -------
-	    np.array
-	       samples
-	    """
+		Returns
+		-------
+		np.array
+		   samples
+		"""
 
 		return np.array(ss.truncnorm.rvs((a-mu)/si, (b-mu)/si, mu, si, N))
 
 	# Sample data
 	def generate_batch(self, n_trials, batch_size=1):
-	    """Generates a batch of data sampled from the generative model
+		"""Generates a batch of data sampled from the generative model
 
-	    Parameters
-	    ----------
-	    n_trials   : int
-	    	number of time points (i.e., trials in the COIN jargon)
-	    batch_size : int
-	    	number of batches
+		Parameters
+		----------
+		n_trials   : int
+			number of time points (i.e., trials in the COIN jargon)
+		batch_size : int
+			number of batches
 
-	    Returns
-	    -------
-	    y  : np.array
-	    	sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 
-	    	is set to one for compatibility with pytorch
-	    q  : np.array
-	    	sequence of cues; same dimensional arrangement as y. Cue emissions are untested.
-	    c  : np.array 
-	    	sequence of sampled contexts; same dimensional arrangement as y. 
-	    """
+		Returns
+		-------
+		y  : np.array
+			sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 
+			is set to one for compatibility with pytorch
+		q  : np.array
+			sequence of cues; same dimensional arrangement as y. Cue emissions are untested.
+		c  : np.array 
+			sequence of sampled contexts; same dimensional arrangement as y. 
+		"""
 
 		self.n_trials = n_trials # hack to avoid passing multiple parameters to pool.map
 
@@ -220,26 +220,26 @@ class GenerativeModel():
 		return(y, q, c)
 
 	def generate_context_batch(self, n_trials, batch_size=1):
-	    """Generates a batch of context sequences;
+		"""Generates a batch of context sequences;
 
-	    Parameters
-	    ----------
-	    n_trials   : int
-	    	number of time points (i.e., trials in the COIN jargon)
-	    batch_size : int
-	    	number of batches
+		Parameters
+		----------
+		n_trials   : int
+			number of time points (i.e., trials in the COIN jargon)
+		batch_size : int
+			number of batches
 
-	    Returns
-	    -------
-	    dict
-	    	Field 'C' contains an np.array with the sequences of sampled contexts; same dimensional
-	    	arrangement as y in generate_batch
+		Returns
+		-------
+		dict
+			Field 'C' contains an np.array with the sequences of sampled contexts; same dimensional
+			arrangement as y in generate_batch
 			When used with the explicit implementation also returns:
 			Field 'pi': the ground truth transition probability matrix
 			Field 'beta': the ground truth global distribution of contexts
-	    """
+		"""
 
-	    # See generate_batch for an explanation of the next two lines
+		# See generate_batch for an explanation of the next two lines
 		self.n_trials = n_trials
 		seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
 
@@ -258,25 +258,25 @@ class GenerativeModel():
 		return batch
 
 	def generate_session(self, seed=None, n_trials=None):
-	    """Generates a single data sequence, optionally with a user-specified random seed;
+		"""Generates a single data sequence, optionally with a user-specified random seed;
 
-	    Parameters
-	    ----------
-	    seed : int (optional)
-	    	random seed for the generation of the sequence (useful for parallelisation)
-	    n_trials : int
-	    	number of time points (i.e., trials in the COIN jargon)
+		Parameters
+		----------
+		seed : int (optional)
+			random seed for the generation of the sequence (useful for parallelisation)
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon)
 
-	    Returns
-	    -------
-	    y  : np.array
-	    	sequence of observations; dim 0 runs across time points, dim 1 is set to one for
-	    	compatibility with pytorch
-	    q  : np.array
-	    	sequence of cues; same dimensional arrangement as y. Cue emissions are untested.
-	    c  : np.array 
-	    	sequence of sampled contexts; same dimensional arrangement as y. 
-	    """
+		Returns
+		-------
+		y  : np.array
+			sequence of observations; dim 0 runs across time points, dim 1 is set to one for
+			compatibility with pytorch
+		q  : np.array
+			sequence of cues; same dimensional arrangement as y. Cue emissions are untested.
+		c  : np.array 
+			sequence of sampled contexts; same dimensional arrangement as y. 
+		"""
 
 		if n_trials is not None:
 			self.n_trials = n_trials
@@ -302,22 +302,22 @@ class GenerativeModel():
 		return(y, q, c)
 
 	def sample_observations(self, contexts, states):
-	    """Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
+		"""Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
 		states x_t^c
 
-	    Parameters
-	    ----------
-	    contexts : integer np.array
-	    	one-dimensional sequence of contexts 
-	    states : dict
-	    	dictionary encoding the latent state values (one-dimensional np.array) for each 
-	    	context c (keys).
+		Parameters
+		----------
+		contexts : integer np.array
+			one-dimensional sequence of contexts 
+		states : dict
+			dictionary encoding the latent state values (one-dimensional np.array) for each 
+			context c (keys).
 
-	    Returns
-	    -------
-	    y  : np.array
-	    	one-dimensional sequence of observations
-	    """
+		Returns
+		-------
+		y  : np.array
+			one-dimensional sequence of observations
+		"""
 
 		y = np.zeros(len(contexts))
 		v = self._sample_N_(0, self.si_r, len(contexts))
@@ -328,22 +328,22 @@ class GenerativeModel():
 		return y
 
 	def sample_states(self, contexts):
-	    """Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
+		"""Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
 		states x_t^c
 
-	    Parameters
-	    ----------
-	    contexts : integer np.array
-	    	one-dimensional sequence of contexts 
+		Parameters
+		----------
+		contexts : integer np.array
+			one-dimensional sequence of contexts 
 
-	    Returns
-	    -------
-	    states : dict
-	    	dictionary encoding the latent state values (one-dimensional np.array) for each 
-	    	context c (keys).
-	    """
+		Returns
+		-------
+		states : dict
+			dictionary encoding the latent state values (one-dimensional np.array) for each 
+			context c (keys).
+		"""
 
-	    # Note that retention and drift are sampled in every call
+		# Note that retention and drift are sampled in every call
 		a = self._sample_TN_(0, 1, self.mu_a, self.si_a, np.max(contexts)+1)
 		d = self._sample_N_(0, self.si_d, np.max(contexts)+1)
 
@@ -359,38 +359,34 @@ class GenerativeModel():
 
 	# Coin estimation
 	def estimate_coin(self, y, eng=None):
-	    """Runs the COIN inference algorithm on a batch of observations
+		"""Runs the COIN inference algorithm on a batch of observations
 		Requires MATLAB and the COIN inference implementation (https://github.com/jamesheald/COIN)
 
-	    Parameters
-	    ----------
-	    y   : np.array
-	    	sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is 
-	    	set to one
-		eng : (optional) an instance of matlab.engine.start_matlab() where the COIN paths have been
-			added. Useful when estimating multiple problems to avoid running multiple 
-			initialisations.
+		Parameters
+		----------
+		y   : np.array
+			sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is 
+			set to one
 
-	    Returns
-	    -------
-	    z_coin : np.array
-	    	predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y
-	    logp   : np.array
+		Returns
+		-------
+		z_coin : np.array
+			predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y
+		logp   : np.array
 			log-probabilities of the input sequence y_t under the COIN posterior distribution; same
 			dimensional arrangement as y
-	    cump   : np.array
+		cump   : np.array
 			cumulative probabilities of the input sequence y_t under the COIN posterior 
 			distribution; same dimensional arrangement as y. Useful to measure calibration.
-	    lamb   : np.array
+		lamb   : np.array
 			responsibilities lambda^c_t for each context c and time-step t. dim 0 runs across 
 			batches, dim 1 across time points, dim 2 across contexts (dimension equals the maximum
 			number of contexts of the COIN model, currently set to 10+1)
 
-	    """
+		"""
 
 		if eng is None:
-			eng  = matlab.engine.start_matlab()
-			eng.addCoinPaths(nargout=0)
+			eng = initialise_matlab_engine()
 
 		# Translation to the naming of the hyperparameters in James' implementation of the COIN
 		# inference algorithm 
@@ -421,35 +417,29 @@ class GenerativeModel():
 		return(z_coin, logp, cump, lamb)
 
 	def run_experiment_coin(self, experiment, N=20, eng=None):
-	    """Runs the COIN inference algorithm on the field sequence corresponding to one of the 
-	    experiments of original COIN paper.
+		"""Runs the COIN inference algorithm on the field sequence corresponding to one of the 
+		experiments of original COIN paper.
 
-	    Parameters
-	    ----------
-	    experiment : str
-	    	Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde) 
-	    	'interference', or (effect of environmental) 'consistency' (on learning rate)
-	    N   : int (optional)
-	    	Number of runs
-		eng : (optional) an instance of matlab.engine.start_matlab() where the COIN paths have been
-			added. Useful when estimating multiple problems to avoid running multiple 
-			initialisations.
-		ax  : (optional) an instance of plt.subplots()
-			plt axes where to plot the result of the simulation
-	    
-	    Returns
-	    -------
-	    u  : dict() (optional)
-	    	A dictionary encoding the predictions across the experiment conditions (keys); same 
-	    	structure as each of the sub-dicts of U produced by initialise_experiments_U
-	    x0  : np.array
+		Parameters
+		----------
+		experiment : str
+			Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde) 
+			'interference', or (effect of environmental) 'consistency' (on learning rate)
+		N   : int (optional)
+			Number of runs
+		
+		Returns
+		-------
+		u  : dict() (optional)
+			A dictionary encoding the predictions across the experiment conditions (keys); same 
+			structure as each of the sub-dicts of U produced by initialise_experiments_U
+		x0  : np.array
 			field values for one of the runs; dim 0 is set to 1, dim 1 runs across time points, 
 			dim 2 is set to one. Useful for plotting.
-	    """
+		"""
 
 		if eng is None:
-			eng = matlab.engine.start_matlab()
-			eng.addCoinPaths(nargout=0)
+			eng = initialise_matlab_engine()
 
 		match experiment:
 
@@ -489,30 +479,27 @@ class GenerativeModel():
 
 		return(u, x0)
 
-	def all_coin_experiments(self, N=20, eng=None):
-	    """Runs the COIN inference algorithm on the field sequence corresponding to the five 
-	    experiments of the original COIN paper that do not involve cue emissions. Results are 
-	    stored in a pickle path and retrieved in each call if the file exists.
+	def all_coin_experiments(self, N=20):
+		"""Runs the COIN inference algorithm on the field sequence corresponding to the five 
+		experiments of the original COIN paper that do not involve cue emissions. Results are 
+		stored in a pickle path and retrieved in each call if the file exists.
 
-	    Parameters
-	    ----------
-	    N   : int (optional)
-	    	Number of runs
-		eng : (optional) an instance of matlab.engine.start_matlab() where the COIN paths have been
-			added. Useful when estimating multiple problems to avoid running multiple 
-			initialisations.
-	    
-	    Returns
-	    -------
-	    U   : dict
+		Parameters
+		----------
+		N   : int (optional)
+			Number of runs
+		
+		Returns
+		-------
+		U   : dict
 			Dictionary with np.arrays encoding the predictions hat{y}_t for the fields of each
 			experiment (keys); dim 0 runs across runs, dim 1 across time points, dim 2 set to one.
-	    x0  : dict
-	    	Dictionary with np.arrays encoding the field values for one of the runs for each 
-	    	experiment (keys); dim 0 is set to 1, dim 1 runs across time points, dim 2 set to one.
-	    """
+		x0  : dict
+			Dictionary with np.arrays encoding the field values for one of the runs for each 
+			experiment (keys); dim 0 is set to 1, dim 1 runs across time points, dim 2 set to one.
+		"""
 
-	    # Pickle storage path is hardcoded to: 
+		# Pickle storage path is hardcoded to: 
 		storingpath = f'./benchmarks/{self.parset}-coinexp.pickle'
 
 		if os.path.exists(storingpath):
@@ -520,14 +507,11 @@ class GenerativeModel():
 				experiments_kit = pickle.load(f)
 				U, X0 = experiments_kit['U'], experiments_kit['X0']
 		else:
-			if eng is None:
-				eng = matlab.engine.start_matlab()
-				eng.addCoinPaths(nargout=0)
-				
+
 			experiments = ['spontaneous', 'evoked', 'savings', 'interference', 'consistency']
 			U, X0 = dict(), dict()
 			for exp in experiments:
-				U[exp], X0[exp] = self.run_experiment_coin(exp, N, eng)
+				U[exp], X0[exp] = self.run_experiment_coin(exp, N)
 			experiments_kit = {'U': U, 'X0': X0}
 
 			with open(storingpath, 'wb') as f:
@@ -535,28 +519,25 @@ class GenerativeModel():
 
 		return U, X0
 
-	def summary_experiments(self, savefig=None, N=20, cmap="Greens", axs=None, eng=None):
-	    """Plots the predictions of the COIN inference algorithm for the field sequences 
-	    corresponding to the five experiments of the original COIN paper that do not involve cue 
-	    emissions.
+	def summary_experiments(self, savefig=None, N=20, cmap="Greens", axs=None):
+		"""Plots the predictions of the COIN inference algorithm for the field sequences 
+		corresponding to the five experiments of the original COIN paper that do not involve cue 
+		emissions.
 
-	    Parameters
-	    ----------
-	    savefig : str (optional)
-	    	Path where to store the figure (without extension). If savefig is not provided, 
-	    	results are plotted but not printed (not shown; use plt.show() for that).
-	    N    : int (optional)
-	    	Number of runs.
+		Parameters
+		----------
+		savefig : str (optional)
+			Path where to store the figure (without extension). If savefig is not provided, 
+			results are plotted but not printed (not shown; use plt.show() for that).
+		N    : int (optional)
+			Number of runs.
 		cmap : (optional) string
 			mycolorpy.colorlistp colormap to use for the plots; e.g., 'Blues', 'Greens', etc
 		axs  : (optional) an np.array instance of plt.subplots()
 			plt axes where to plot the results
-		eng  : (optional) an instance of matlab.engine.start_matlab() where the COIN paths have been
-			added. Useful when estimating multiple problems to avoid running multiple 
-			initialisations.
-	    """
+		"""
 
-		U, X0 = self.all_coin_experiments(N, eng)
+		U, X0 = self.all_coin_experiments(N)
 
 		if axs is None:
 			fig, axs = plt.subplots(1, 5)
@@ -573,32 +554,32 @@ class GenerativeModel():
 
 	# Leaky integrator estimation
 	def estimate_leaky_average(self, y, tau=None):
-	    """Runs a leaky integrator with integration time constant tau to generate predictions for
-	    the observations hat{y}_t on the input sequence y_{1:t-1}.
+		"""Runs a leaky integrator with integration time constant tau to generate predictions for
+		the observations hat{y}_t on the input sequence y_{1:t-1}.
 
-	    Parameters
-	    ----------
-	    y   : np.array
-	    	sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is 
-	    	set to one 
+		Parameters
+		----------
+		y   : np.array
+			sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is 
+			set to one 
 		tau : (optional) float or np.array
 			(set of) integration time constant(s). If not specified, it's set to the optimal value
 			for the current hyperparametrisation.
 
-	    Returns
-	    -------
-	    z_slid : np.array
-	    	predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y
-	    logp   : np.array
+		Returns
+		-------
+		z_slid : np.array
+			predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y
+		logp   : np.array
 			log-probabilities of the input sequence y_t
-	    cump   : np.array
+		cump   : np.array
 			cumulative probabilities of the input sequence y_t. Useful to measure calibration.
-	    tau   : np.array
-			integration time constant(s); useful if the optimal value is estimated during the call.
 
-	    """
+		"""
 		if tau is None:
-			tau = self.fit_best_tau(n_trials = y.shape[1])
+			if not hasattr(self, 'best_t'):
+				self.fit_best_tau(n_trials = y.shape[1])
+			tau = self.best_t
 
 		if type(tau) != np.ndarray:
 			tau = np.array([tau])
@@ -618,7 +599,10 @@ class GenerativeModel():
 		logp = (-0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y[:,:,np.newaxis]) / s_slid) ** 2)
 		cump = 0.5 * (1 + scipy.special.erf((y[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
 
-		return(z_slid, logp, cump, tau)
+		if len(tau) == 1:
+			z_slid, logp, cump = z_slid[..., 0], logp[..., 0], cump[..., 0]
+
+		return(z_slid, logp, cump)
 
 	def _estimate_leaky_average_call_(self, inpars):
 		""" Wrapper of estimate_leaky_average to take in multiple parameters during 
@@ -631,22 +615,22 @@ class GenerativeModel():
 		"""Finds the integration time constant tau minimising prediction error for the current
 		hyperparametrisation and number of trials.
 
-	    Parameters
-	    ----------
-	    n_trials : int
-	    	number of time points (i.e., trials in the COIN jargon)
+		Parameters
+		----------
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon)
 		n_train_instances : (optional) int
-	    	number of instances to use for the estimation
+			number of instances to use for the estimation
 
-	    Returns
-	    -------
-	    best_t : float
-	    	optimal integration time constant tau
-	    """
+		Returns
+		-------
+		best_t : float
+			optimal integration time constant tau
+		"""
 
 		def fn(tau):
 			res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
-			mse = np.mean([((r[0][:,:,0] - x)**2).mean() for r, x in zip(res, X)])
+			mse = np.mean([((r[0] - x)**2).mean() for r, x in zip(res, X)])
 			return(mse)
 
 		X = self.generate_batch(n_trials, n_train_instances)[0][:, :, 0]
@@ -660,7 +644,9 @@ class GenerativeModel():
 			taus = np.arange(100, -1, -1)
 			res  = self.pool.map(self._estimate_leaky_average_call_, [(x, taus) for x in X])
 			z_slid = np.array([r[0] for r in res])
-			best_t = taus[((z_slid[:, 0, :, :] - X[..., None])**2).mean((0,1)).argmin()]
+			best_t = taus[((z_slid[:, 0, :] - X)**2).mean((0,1)).argmin()]
+
+		self.best_t = best_t
 
 		return best_t
 
@@ -670,15 +656,15 @@ class GenerativeModel():
 		and the empirical context transition probability matrix and global probabilities averaged
 		across instances. The two plots are saved as figures.
 
-	    Parameters
-	    ----------
-	    n_trials : int
-	    	number of time points (i.e., trials in the COIN jargon)
+		Parameters
+		----------
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon)
 		n_instances : (optional) int
-	    	number of independent instances to plot
-	    suffix : (optional) str
-	    	suffix appended to the filepath of the two produced figures
-	    """
+			number of independent instances to plot
+		suffix : (optional) str
+			suffix appended to the filepath of the two produced figures
+		"""
 
 		n = int(np.floor(np.sqrt(n_instances)))
 		m = int(np.ceil(n_instances / n))
@@ -716,23 +702,23 @@ class GenerativeModel():
 		fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
 	# Benchmarks
-	def benchmark(self, n_trials=5000, n_instances=512, suffix=None):
+	def benchmark(self, n_trials=5000, n_instances=512, suffix=None, eng=None):
 		"""Performs a thorough benchmarking of the generative model for the given number of trials. 
 		The function stores the benchmarks in a pickle for easy retrieval and only performs the
 		computations if the pickle file does not exist.
 
-	    Parameters
-	    ----------
-	    n_trials : int
-	    	number of time points (i.e., trials in the COIN jargon)
+		Parameters
+		----------
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon)
 		n_instances : (optional) int
-	    	number of instances used to calculate the benchmark
-	    suffix : (optional) str
-	    	suffix appended to the filepath of the pickle file; useful to keep e.g. independent
-	    	training and testing benchmarking sets
+			number of instances used to calculate the benchmark
+		suffix : (optional) str
+			suffix appended to the filepath of the pickle file; useful to keep e.g. independent
+			training and testing benchmarking sets
 
-	    Returns
-	    -------
+		Returns
+		-------
 		benchmark_kit : dict
 			A dictionary with fields:
 			benchmark_kit['X']      : set of observation sequences used to compute the benchmarks
@@ -740,7 +726,7 @@ class GenerativeModel():
 			benchmark_kit['perf']   : a dictionary with several statistics measuring the 
 									  performance of the COIN and leaky integrator on the set X
 			benchmark_kit['best_t'] : optimal integration time constant of the leaky integrator
-	    """
+		"""
 
 		if suffix is None:
 			benchmarkpath = f'./benchmarks/{self.parset}-{n_trials}.pickle'
@@ -766,9 +752,9 @@ class GenerativeModel():
 			print(f'Estimating LI...', end=' ', flush=True)
 			res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, :, 0], tau) for x in X])
 
-			z_slid    = np.array([r[0][0, :, 0] for r in res])
-			p_slid    = np.array([r[1][0, :, 0] for r in res])
-			cump_slid = np.array([r[2][0, :, 0] for r in res])
+			z_slid    = np.array([r[0][0, :] for r in res])
+			p_slid    = np.array([r[1][0, :] for r in res])
+			cump_slid = np.array([r[2][0, :] for r in res])
 
 			F = np.linspace(0, 1, 1000)
 			cums_cump_slid = np.array([(cump_slid <= f).sum(1)/n_trials for f in F])
@@ -781,8 +767,6 @@ class GenerativeModel():
 
 
 			print(f'Estimating coin...', flush=True)
-			eng  = matlab.engine.start_matlab()
-			eng.addCoinPaths(nargout=0)
 			z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng)
 			loglamb = np.log(lamb + np.exp(minloglik))
 
@@ -860,15 +844,15 @@ class GenerativeModel():
 		and context global probabilities for sequences with n_trials timepoints and the current 
 		hyperparametrisation.
 
-	    Parameters
-	    ----------
-	    n_trials : int
-	    	number of time points (i.e., trials in the COIN jargon)
+		Parameters
+		----------
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon)
 		n_instances : (optional) int
-	    	number of instances used to calculate the stats
+			number of instances used to calculate the stats
 
-	    Returns
-	    -------
+		Returns
+		-------
 		r : dict
 			A dictionary with fields:
 			r['n_sampled']      : a dict encoding the dependency of visited contexts with n_trials
@@ -877,7 +861,7 @@ class GenerativeModel():
 			When used under ExplicitGenerativeModel the dictionary has, in addition:
 			r['ground_pi']   : average ground-truth transition probability matrix
 			r['ground_beta'] : average ground-truth global context probabilities
-	    """
+		"""
 
 		# Data generation
 		batch = self.generate_context_batch(n_trials, n_instances)
@@ -894,7 +878,7 @@ class GenerativeModel():
 
 		# Empirical pi
 		empirical_pi = np.array([[np.logical_and(C[:, :-1]==c1, C[:, 1:]==c2).mean() for c1 in ctxs] 
-											                                        for c2 in ctxs])
+																					for c2 in ctxs])
 		r = dict()
 		if 'pi' in batch:
 			pi_avg = np.zeros((n_ctx, n_ctx))
@@ -919,47 +903,47 @@ class GenerativeModel():
 
 
 class ExplicitGenerativeModel(GenerativeModel):
-    """
-    Extends GenerativeModel to include context and cue sampling using the explicit method: i.e., 
-    first sampling the transition probability matrices and then simulating a Markov Chain. This 
-    method is an approximation. Cue emission has not been thoroughly tested.
+	"""
+	Extends GenerativeModel to include context and cue sampling using the explicit method: i.e., 
+	first sampling the transition probability matrices and then simulating a Markov Chain. This 
+	method is an approximation. Cue emission has not been thoroughly tested.
 
-    Additional Methods
-    -------
+	Additional Methods
+	-------
 	sample_pi_t(alpha, beta, rho)
-	    Samples a finite approximation of the ground truth transition probability matrix
+		Samples a finite approximation of the ground truth transition probability matrix
 
 	sample_pi_q(alpha, beta, N):
-	    Samples a finite approximation of the ground truth cue emission probability matrix.
+		Samples a finite approximation of the ground truth cue emission probability matrix.
 
 	sample_contexts(seed, n_trial):
-	    Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-	    independent sample of pi_t and beta_t.
+		Samples a sequence of contexts by simulating a markov chain. Each call uses an 
+		independent sample of pi_t and beta_t.
 
 	sample_cues(contexts):
-	    Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
+		Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
 
-    """
+	"""
 
 	def __init__(self, parset):
 		super().__init__(parset)
 
 	# Generic sampling methods
 	def _sample_DP_(self, alpha, H):
-	    """Samples from a dirichlet process
+		"""Samples from a dirichlet process
 
-	    Parameters
-	    ----------
-	    alpha : float
-	        concentration parameter
-	    H     : np.array
-	        base distribution (a discrete probability distribution)
+		Parameters
+		----------
+		alpha : float
+			concentration parameter
+		H     : np.array
+			base distribution (a discrete probability distribution)
 
-	    Returns
-	    -------
-	    np.array
-	       sample (a discrete probability distribution)
-	    """
+		Returns
+		-------
+		np.array
+		   sample (a discrete probability distribution)
+		"""
 
 		pi_tilde = self._sample_GEM_(alpha, threshold=1E-5)
 		theta    = random.choices(range(len(H)), H, k=len(pi_tilde))
@@ -968,20 +952,20 @@ class ExplicitGenerativeModel(GenerativeModel):
 		return G
 
 	def _sample_GEM_(self, gamma, threshold=1E-8):
-	    """Samples from a GEM distribution using the stick-breaking construction
+		"""Samples from a GEM distribution using the stick-breaking construction
 
-	    Parameters
-	    ----------
-	    gamma     : float
-	        concentration parameter (controls the relative length of each break point) 
-	    threshold : float
-	        maximum stick length before stopping the theoretically-infinite process
+		Parameters
+		----------
+		gamma     : float
+			concentration parameter (controls the relative length of each break point) 
+		threshold : float
+			maximum stick length before stopping the theoretically-infinite process
 
-	    Returns
-	    -------
-	    np.array
-	       sample (a discrete probability distribution)
-	    """
+		Returns
+		-------
+		np.array
+		   sample (a discrete probability distribution)
+		"""
 
 		sample, stick_len = [], 1.
 
@@ -997,22 +981,22 @@ class ExplicitGenerativeModel(GenerativeModel):
 
 	# Parameter sampling methods
 	def sample_pi_t(self, alpha, beta, rho):
-	    """Samples a finite approximation of the ground truth transition probability matrix
+		"""Samples a finite approximation of the ground truth transition probability matrix
 
-	    Parameters
-	    ----------
-	    alpha  : float
-	        concentration parameter controls the dispersion of the rows with respect to beta 
-	    beta : np.array (a discrete probability distribution)
-	        global probabilities
+		Parameters
+		----------
+		alpha  : float
+			concentration parameter controls the dispersion of the rows with respect to beta 
+		beta : np.array (a discrete probability distribution)
+			global probabilities
 		rho : float 
 			normalised self-transition bias; 0 < rho < 1
-	    
-	    Returns
-	    -------
-	    np.array
-	       transition probability matrix; row n is the transition distribution from context n
-	    """
+		
+		Returns
+		-------
+		np.array
+		   transition probability matrix; row n is the transition distribution from context n
+		"""
 
 		pi = np.zeros((len(beta), len(beta)))
 		for j in range(len(beta)):
@@ -1022,23 +1006,23 @@ class ExplicitGenerativeModel(GenerativeModel):
 		return pi
 
 	def sample_pi_q(self, alpha, beta, N):
-	    """Samples a finite approximation of the ground truth cue emission probability matrix.
+		"""Samples a finite approximation of the ground truth cue emission probability matrix.
 
-	    Parameters
-	    ----------
-	    alpha  : float
-	        concentration parameter controls the dispersion of the rows with respect to beta 
-	    beta : np.array (a discrete probability distribution)
-	        global cue probabilities
+		Parameters
+		----------
+		alpha  : float
+			concentration parameter controls the dispersion of the rows with respect to beta 
+		beta : np.array (a discrete probability distribution)
+			global cue probabilities
 		N : int 
 			number of contexts
-	    
-	    Returns
-	    -------
-	    np.array
-	       cue emission probability matrix; row n is the probability distribution across cues for
-	       context n
-	    """
+		
+		Returns
+		-------
+		np.array
+		   cue emission probability matrix; row n is the probability distribution across cues for
+		   context n
+		"""
 
 		pi = np.zeros((N, len(beta)))
 		for j in range(N):
@@ -1048,27 +1032,27 @@ class ExplicitGenerativeModel(GenerativeModel):
 
 	# Observation sampling methods
 	def sample_contexts(self, seed=None, n_trials=None):
-	    """Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-	    independent sample of pi_t and beta_t.
+		"""Samples a sequence of contexts by simulating a markov chain. Each call uses an 
+		independent sample of pi_t and beta_t.
 
-	    Parameters
-	    ----------
-	    seed : int (optional)
-	    	random seed for the generation of the sequence (useful for parallelisation)
-	    n_trials : int (optional)
-	    	number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
-	    	is readout from self.n_trials
+		Parameters
+		----------
+		seed : int (optional)
+			random seed for the generation of the sequence (useful for parallelisation)
+		n_trials : int (optional)
+			number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
+			is readout from self.n_trials
 
-	    Returns
-	    -------
-	    contexts : np.array 
-	    	sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one for
-	    	compatibility with pytorch
- 		beta_t   : np.array
- 			ground-truth global context probabilities
- 		pi_t     : np.array
- 			ground-truth transition probability matrix
-	    """
+		Returns
+		-------
+		contexts : np.array 
+			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one for
+			compatibility with pytorch
+		beta_t   : np.array
+			ground-truth global context probabilities
+		pi_t     : np.array
+			ground-truth transition probability matrix
+		"""
 
 		if seed is not None:
 			np.random.seed(seed)
@@ -1098,6 +1082,8 @@ class ExplicitGenerativeModel(GenerativeModel):
 			contexts[t] = c2c[c[t]]
 
 		contexts = list(contexts)
+		# !! Reverting reordering of contexts
+		contexts = list(c)
 
 		self.beta_t = beta_t
 		self.pi_t   = pi_t
@@ -1106,19 +1092,19 @@ class ExplicitGenerativeModel(GenerativeModel):
 		return(contexts, beta_t, pi_t)
 
 	def sample_cues(self, contexts):
-	    """Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-	    Cue emission has not been thoroughly tested
+		"""Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
+		Cue emission has not been thoroughly tested
 
-	    Parameters
-	    ----------
-	    contexts : np.array
-	    	sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
+		Parameters
+		----------
+		contexts : np.array
+			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
 
-	    Returns
-	    -------
-	    cues : np.array 
-	    	sequence of emitted cues
-	    """
+		Returns
+		-------
+		cues : np.array 
+			sequence of emitted cues
+		"""
 
 		beta_q  = self._sample_GEM_(self.pars['gamma_q'])
 		pi_q    = self.sample_pi_q(self.pars['alpha_q'], beta_q, max(contexts)+1)
@@ -1134,17 +1120,17 @@ class ExplicitGenerativeModel(GenerativeModel):
 
 
 class CRFGenerativeModel(GenerativeModel):
-    """
-    Extends GenerativeModel to include context and cue sampling using the Chinese Restaurant 
-    Franchise method. This method is exact. Cue emission has not been thoroughly tested.
+	"""
+	Extends GenerativeModel to include context and cue sampling using the Chinese Restaurant 
+	Franchise method. This method is exact. Cue emission has not been thoroughly tested.
 
-    Additional Methods
-    -------
+	Additional Methods
+	-------
 	sample_contexts(seed=None, n_trials=None):
-	    Samples a sequence of contexts using the CRF construction.
+		Samples a sequence of contexts using the CRF construction.
 
 	sample_cues(contexts):
-	    Samples a sequence of cues.
+		Samples a sequence of cues.
 	"""
 
 	def __init__(self, parset):
@@ -1153,22 +1139,22 @@ class CRFGenerativeModel(GenerativeModel):
 	# Observation sampling methods
 	def sample_contexts(self, seed=None, n_trials=None):
 		"""Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-	    independent sample of pi_t and beta_t.
+		independent sample of pi_t and beta_t.
 
-	    Parameters
-	    ----------
-	    seed : int (optional)
-	    	random seed for the generation of the sequence (useful for parallelisation)
-	    n_trials : int
-	    	number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
-	    	is readout from self.n_trials
+		Parameters
+		----------
+		seed : int (optional)
+			random seed for the generation of the sequence (useful for parallelisation)
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
+			is readout from self.n_trials
 
-	    Returns
-	    -------
-	    contexts : np.array 
-	    	sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one for
-	    	compatibility with pytorch
-	    """
+		Returns
+		-------
+		contexts : np.array 
+			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one for
+			compatibility with pytorch
+		"""
 
 		if seed is not None:
 			np.random.seed(seed)
@@ -1247,20 +1233,20 @@ class CRFGenerativeModel(GenerativeModel):
 		return list(contexts)
 
 	def sample_cues(self, contexts):
-	    """Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-	    Cue emission has not been thoroughly tested
+		"""Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
+		Cue emission has not been thoroughly tested
 
-	    Parameters
-	    ----------
-	    contexts : np.array
-	    	sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
+		Parameters
+		----------
+		contexts : np.array
+			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
 
-	    Returns
-	    -------
-	    cues : np.array 
-	    	sequence of emitted cues
-	    """
-	    
+		Returns
+		-------
+		cues : np.array 
+			sequence of emitted cues
+		"""
+		
 		max_j = max(contexts) + 1
 		max_d = max(5, max(contexts) + 1)
 		max_t = 500
@@ -1328,22 +1314,22 @@ class CRFGenerativeModel(GenerativeModel):
 def load_pars(parset):
 	""" Loads a set of COIN hyperparameters from a pre-specified label. 
 
-	    Parameters
-	    ----------
-	    parset : str
-	    	String identifying the hyperparametrisation. Can be: 1) a reference from a subject from
-	    	the COIN paper (e.g., 'S1', 'E5', 'M23'), 'fitted' (average across all subjects), 
-	    	'validation' (set used for the validation of the inference algorithm in the COIN paper),
-	    	'training' (a set that maxisimises the MSE difference between the COIN inference and 
-	    	a leaky integrator with a high self-transition bias), 'transitions' (a set that 
-	    	produces rich transition probability matrices with a low self-transition bias), or 
-	    	'transglobal' (a set with a balance between rich transition probability matrices and a 
-	    	strong resemblance between the transition and global probabilities)
+		Parameters
+		----------
+		parset : str
+			String identifying the hyperparametrisation. Can be: 1) a reference from a subject from
+			the COIN paper (e.g., 'S1', 'E5', 'M23'), 'fitted' (average across all subjects), 
+			'validation' (set used for the validation of the inference algorithm in the COIN paper),
+			'training' (a set that maxisimises the MSE difference between the COIN inference and 
+			a leaky integrator with a high self-transition bias), 'transitions' (a set that 
+			produces rich transition probability matrices with a low self-transition bias), or 
+			'transglobal' (a set with a balance between rich transition probability matrices and a 
+			strong resemblance between the transition and global probabilities)
 
-	    Returns
-	    -------
-	    dict
-	       Dictionary listing the values for each hyperparameters (keys).
+		Returns
+		-------
+		dict
+		   Dictionary listing the values for each hyperparameters (keys).
 	"""
 
 	if type(parset) is str:
@@ -1407,26 +1393,26 @@ def load_pars(parset):
 def load_sub_pars(types = ['S', 'E', 'F', 'V', 'M']):
 	""" Loads the hyperparameter sets listed in the COIN paper
 
-	    Parameters
-	    ----------
-	    types : list of strings
-	    	Each string identifies a type of hyperparameters: 'S' (hyperparameters fitted to the 
-	    	subjects from the spontaneous recovery experiment), 'E' (hyperparameters fitted to the 
-	    	subjects from the evoked recovery experiment), 'F' (hyperparameters used to produce
-	    	Fig1 from the paper), 'V' (hyperparameters used to validate the COIN inference 
-	    	algorithm), 'M' (hyperparameters fitted to the subjects from the memory update
-	    	 experiment)
+		Parameters
+		----------
+		types : list of strings
+			Each string identifies a type of hyperparameters: 'S' (hyperparameters fitted to the 
+			subjects from the spontaneous recovery experiment), 'E' (hyperparameters fitted to the 
+			subjects from the evoked recovery experiment), 'F' (hyperparameters used to produce
+			Fig1 from the paper), 'V' (hyperparameters used to validate the COIN inference 
+			algorithm), 'M' (hyperparameters fitted to the subjects from the memory update
+			 experiment)
 
-	    Returns
-	    -------
-	    dict
-	       Dictionary listing the hyperparametrisations (values; as dicts) for each subject (keys)
+		Returns
+		-------
+		dict
+		   Dictionary listing the hyperparametrisations (values; as dicts) for each subject (keys)
 	"""
 
 	if type(types) != list:
 		types = list(types)
-
-	with open('./subParameters.csv', 'r') as f:
+	
+	with open(os.path.join(pathlib.Path(__file__).parent, './subject_pars.csv'), 'r') as f:
 		subparfile = csv.reader(f, delimiter='\t')
 		fields = next(subparfile)
 		subpar = dict()
@@ -1444,27 +1430,27 @@ def load_sub_pars(types = ['S', 'E', 'F', 'V', 'M']):
 def load_recovery_data(subs=None):
 	""" Loads the data (subject responses) from the spontaneous and evoked recovery experiments 
 
-	    Parameters
-	    ----------
-	    subs : str or list of str
-	    	Each string identifies a subject (e.g., 'S1') or a set of subjects (e.g., 'S'). All 
-	    	entries should correspond to one experiment only.
+		Parameters
+		----------
+		subs : str or list of str
+			Each string identifies a subject (e.g., 'S1') or a set of subjects (e.g., 'S'). All 
+			entries should correspond to one experiment only.
 
-	    Returns
-	    -------
-	    y: np.array
-	    	Subject responses
-	    t: np.array
-	    	Ticks identifying the trial number corresponding to each of the entries in y
-	    f: np.array
-	    	Field values (i.e., observations) from the experiment
+		Returns
+		-------
+		y: np.array
+			Subject responses
+		t: np.array
+			Ticks identifying the trial number corresponding to each of the entries in y
+		f: np.array
+			Field values (i.e., observations) from the experiment
 	"""
 	if subs == 'E':
 		subs = [f'S{d}' for d in range(1,9)]
 		exp = 'S'
 	elif subs == 'S':
-	 	subs = [f'E{d}' for d in range(1,9)]
-	 	exp  = 'E'
+		subs = [f'E{d}' for d in range(1,9)]
+		exp  = 'E'
 
 	if type(subs) is not list:
 		subs = [subs]
@@ -1488,24 +1474,46 @@ def load_recovery_data(subs=None):
 	return y, t, f
 
 
+def initialise_matlab_engine():
+
+	""" Creates a MATLAB engine including all the paths necessary to call COIN() and
+		an initialised parallel pool. Since the intialisation takes up to one minute
+		it is a good idea to reuse the same engine when it is required to call COIN()
+		multiple times. Initially the engine was set as variabe and this functiona 
+		was a method of GenerativeModel(); however, matlab engines cannot be pickled
+		nor dilled, so including one as a variable of GenerativeModel() does not
+		allow to call its methods in parallel processes.
+
+		Returns
+		---------
+		eng  : a callable MATLAB engine
+	"""
+
+	eng = matlab.engine.start_matlab()
+	eng.addpath(f'{pathlib.Path(__file__).parent}', nargout=0)
+	eng.addCoinPaths(nargout=0)
+
+	return eng
+
+
 def generate_field_sequence(experiment, noise=0.03, batch_size=1, **kwargs):
 	""" Generates a set of fields (observations) corresponding to the specified experiment
 
-	    Parameters
-	    ----------
-	    experiment : str
-	    	Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde) 
-	    	'interference', or (effect of environmental) 'consistency' (on learning rate)
-	    noise      : float
-	    	standard deviation of the observation noise
-	    batch_size : int
-	    	number of batches
+		Parameters
+		----------
+		experiment : str
+			Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde) 
+			'interference', or (effect of environmental) 'consistency' (on learning rate)
+		noise      : float
+			standard deviation of the observation noise
+		batch_size : int
+			number of batches
 
-	    Returns
-	    -------
-	    x  : np.array
-	    	sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 
-	    	is set to one for compatibility with pytorch
+		Returns
+		-------
+		x  : np.array
+			sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 
+			is set to one for compatibility with pytorch
 	"""
 
 	match experiment:
@@ -1566,24 +1574,24 @@ def initialise_experiments_U(N, experiments=None):
 	""" Auxiliary function that initialises a dictionary to store predictions corresponding to one 
 		or several of the experiments. To be called by model-specific functions.
 
-	    Parameters
-	    ----------
-	    N : int
-	    	number of runs/batches
-	    experiments : list of str (optional)
+		Parameters
+		----------
+		N : int
+			number of runs/batches
+		experiments : list of str (optional)
 			Lists the required experiments; if not provided it assumes all experiments are required
 
-	    Returns
-	    -------
-	    U0: dict
-	    	Each entry is a dict initialising the dict-fields required to store the results for 
-	    	each experiment (keys)
+		Returns
+		-------
+		U0: dict
+			Each entry is a dict initialising the dict-fields required to store the results for 
+			each experiment (keys)
 	"""
 	U0 = {'spontaneous': {'data': np.zeros((N, 340))},
-	      'evoked': {'data': np.zeros((N, 342))},
-	      'savings': dict([(k, np.zeros((N, 125))) for k in ['first', 'second']]),
-	      'interference': dict([(n, np.zeros((N, 115))) for n in [0, 13, 41, 112, 230, 369]]),
-	      'consistency': dict([(p, np.zeros((N, 6))) for p in [0.1, 0.5, 0.9]])}
+		  'evoked': {'data': np.zeros((N, 342))},
+		  'savings': dict([(k, np.zeros((N, 125))) for k in ['first', 'second']]),
+		  'interference': dict([(n, np.zeros((N, 115))) for n in [0, 13, 41, 112, 230, 369]]),
+		  'consistency': dict([(p, np.zeros((N, 6))) for p in [0.1, 0.5, 0.9]])}
 
 	if experiments is not None:
 		for exp in [k for k in U0 if k not in experiments]:
@@ -1596,20 +1604,20 @@ def compute_model_avg_mse(U):
 	""" Auxiliary function that computes the average and mse of the predictions across several runs
 		of the experiments of the COIN paper.
 
-	    Parameters
-	    ----------
-	    U : dict()
-	    	A dictionary encoding the predictions across several batches; same structure as produced
-	    	by initialise_experiments_U
+		Parameters
+		----------
+		U : dict()
+			A dictionary encoding the predictions across several batches; same structure as produced
+			by initialise_experiments_U
 
-	    Returns
-	    -------
-	    model_avg: dict
-	    	Each entry is a [dict storing the average for each of the conditions (keys)] for each 
-	    	experiment (keys)
-	    mse: dict
-	    	Each entry is a float with the average mse across conditions and trials for each 
-	    	experiment (keys)
+		Returns
+		-------
+		model_avg: dict
+			Each entry is a [dict storing the average for each of the conditions (keys)] for each 
+			experiment (keys)
+		mse: dict
+			Each entry is a float with the average mse across conditions and trials for each 
+			experiment (keys)
 
 	"""
 
@@ -1630,17 +1638,17 @@ def estimate_subject_fits(subs=None):
 	""" Estimates the predictions of the COIN inference model across a set of subjects for all the
 		experiments from the COIN paper that do not involve cue emissions. 
 
-	    Parameters
-	    ----------
-	    subs : str or list of str (optional)
-	    	Each string identifies a subject (e.g., 'S1') or a set of subjects (e.g., 'S'). If not
-	    	specified it uses all 'S' and 'E' subjects.
+		Parameters
+		----------
+		subs : str or list of str (optional)
+			Each string identifies a subject (e.g., 'S1') or a set of subjects (e.g., 'S'). If not
+			specified it uses all 'S' and 'E' subjects.
 
-	    Returns
-	    -------
-	    U : dict()
-	    	A dictionary encoding the predictions across subjects and experiments; same structure 
-	    	as produced by initialise_experiments_U
+		Returns
+		-------
+		U : dict()
+			A dictionary encoding the predictions across subjects and experiments; same structure 
+			as produced by initialise_experiments_U
 	"""
 
 	if subs is None:
@@ -1648,13 +1656,10 @@ def estimate_subject_fits(subs=None):
 
 	subs = list(load_sub_pars(subs).keys())
 
-	eng = matlab.engine.start_matlab()
-	eng.addCoinPaths(nargout=0)
-
 	U = initialise_experiments_U(len(subs))
 
 	for s, sub in enumerate(subs):
-		Usub, X0 = CRFGenerativeModel(sub).all_coin_experiments(eng=eng)
+		Usub, X0 = CRFGenerativeModel(sub).all_coin_experiments()
 		for key in Usub:
 			if type(Usub[key]) is dict:
 				for subkey in Usub[key]:
@@ -1669,11 +1674,11 @@ def plot_group_avg(U=None, modname=None, modmap="Greens", ddmap="Purples", axs=N
 	""" Plots a set of predictions across all experiments from the COIN paper that do not involve
 		cue emissions, optionally against the actual experimental data. 
 
-	    Parameters
-	    ----------
-	    U       : dict() (optional)
-	    	A dictionary encoding the predictions across subjects and experiments; same structure 
-	    	as produced by initialise_experiments_U
+		Parameters
+		----------
+		U       : dict() (optional)
+			A dictionary encoding the predictions across subjects and experiments; same structure 
+			as produced by initialise_experiments_U
 		modname : str (optional)
 			String identifying the model that produced the predictions; if not specified it assumes
 			COIN
@@ -1689,9 +1694,9 @@ def plot_group_avg(U=None, modname=None, modmap="Greens", ddmap="Purples", axs=N
 		savefig : (optional) str or None
 			filepath (without extension) to save the produced figure; if None or not specified it
 			does not print the figure (it can be shown with plt.show())
-	    
-	    Returns
-	    -------
+		
+		Returns
+		-------
 		dict (only if modmap and U are not None; i.e., only if plotting data) 
 			mse of the predictions with respect to the data for all experiments (keys)
 
@@ -1739,11 +1744,11 @@ def plot_experiment(u, experiment, axs=None, cmap="Blues", legsuffix=''):
 	""" Plots a set of predictions across all experiments from the COIN paper that do not involve
 		cue emissions, optionally against the actual experimental data. 
 
-	    Parameters
-	    ----------
-	    u  : dict() (optional)
-	    	A dictionary encoding the predictions across the experiment conditions (keys); same 
-	    	structure as each of the sub-dicts of U produced by initialise_experiments_U
+		Parameters
+		----------
+		u  : dict() (optional)
+			A dictionary encoding the predictions across the experiment conditions (keys); same 
+			structure as each of the sub-dicts of U produced by initialise_experiments_U
 		experiment : str 
 			name of the experiment corresponding to the provided predictions; should be one of 
 			the experiments considered in generate_field_sequence
@@ -1805,13 +1810,13 @@ def plot_predictions(x, c=None, u=None, s=None, ax=[]):
 	""" Auxiliary function that plots a single line of observations/fields, an average prediction,
 		and its associated uncertainty. 
 
-	    Parameters
-	    ----------
-	    x  : np.array
-	    	A one-dimensional array encoding the line of observations/fields
+		Parameters
+		----------
+		x  : np.array
+			A one-dimensional array encoding the line of observations/fields
 		c  : np.array (optional)
-	    	A one-dimensional array encoding the contexts corresponding to the fields; when 
-	    	specified, observations are colour-coded corresponding to their context 
+			A one-dimensional array encoding the contexts corresponding to the fields; when 
+			specified, observations are colour-coded corresponding to their context 
 		u  : np.array (optional)
 			A one-dimensional array encoding the average prediction
 		s  : np.array (optional)
@@ -1847,9 +1852,9 @@ def load_group_data():
 	""" Auxiliary function that loads the behavioural group data for the five experiments of the 
 		COIN paper that do not involve cue emissions
 
-	    Returns
-	    ----------
-	    dict
+		Returns
+		----------
+		dict
 			A dictionary with the data for each of the experiments (keys). Values are dictionaries
 			with entries for each experimental condition (keys). Values in each condition are 
 			dictionaries encoding the (keys) mean, std, and timepoints of the measurements.
