@@ -57,7 +57,7 @@ def compute_parscan(results_pickle, parscan_config, n_samples, n_trials):
 		# Instantiate GM with current parset
 		new_pars = dict([(p, parscan_config[p][N[i]]) for i, p in enumerate(parscan_config.keys())])
 		new_pars['gamma_t'] = 0.25
-		parsetname = '_'.join([f'{p}-{100* new_pars[p]:03.0f}' for p in new_pars])
+		parsetname = '_'.join([f'{p}-{1000* new_pars[p]:03.0f}' for p in new_pars])
 		pars = coin.load_pars('validation')
 		pars.update(new_pars)
 		gm = coin.CRFGenerativeModel({'pars': pars, 'name': parsetname})
@@ -90,11 +90,13 @@ def compute_parscan(results_pickle, parscan_config, n_samples, n_trials):
 						 'mse_coin': mse_coin, 'logp_coin': logp_coin}, f)
 
 
-def plot_result_tensor(mean, sem, vmin, vmax, parscan_config, figname=None):
+def plot_results(mean, sem, parscan_config, figname=None):
 
 	n_par_vals = tuple([len(parscan_config[p]) for p in parscan_config.keys()])
 	par_names = list(parscan_config.keys())
 	n = [0 for _ in n_par_vals]
+
+	vmin, vmax  = 0.1 * np.floor(10 * mean.min()), 0.1 * np.ceil(10 * mean.max())
 
 	fig, axs = plt.subplots(*n_par_vals[:2])
 	for n[0] in range(n_par_vals[0]):
@@ -103,7 +105,7 @@ def plot_result_tensor(mean, sem, vmin, vmax, parscan_config, figname=None):
 				an = [[f'{mean[n[0],n[1],n2,n3]:.2g}' for n3 in range(n_par_vals[3])] 
 																for n2 in range(n_par_vals[2])]
 			else:
-				an = [[f'{mean[n[0],n[1],n2,n3]:.2g} \u00B1 {sem[n[0],n[1],n2,n3]:.1g}' 
+				an = [[f'{mean[n[0],n[1],n2,n3]:.2f} \u00B1 {sem[n[0],n[1],n2,n3]:.2f}' 
 																for n3 in range(n_par_vals[3])] 
 																for n2 in range(n_par_vals[2])]
 			yl = [f'{v:.2f}' for v in parscan_config[par_names[2]]]
@@ -120,7 +122,7 @@ def plot_result_tensor(mean, sem, vmin, vmax, parscan_config, figname=None):
 	if figname is None:
 		plt.show()
 	else:
-		fig.set_size_inches(30, 15)
+		fig.set_size_inches(40, 20)
 		plt.savefig(f'{figname}.png')
 
 
@@ -130,17 +132,13 @@ results_pickle = './parscan.pickle'
 parscan_config =  {'rho_t':   np.array([0.20, 0.40, 0.60, 0.80, 0.99]),
 				   'alpha_t': np.array([0.1, 0.5, 1.0, 5.0, 10.0]),
 		           'mu_a':    np.array([0.1, 0.25, 0.5, 0.75, 0.9]),
-		           'si_d':    np.array([0.01, 0.05, 0.1, 0.5, 1.0])}
+		           'si_d':    np.array([0.005, 0.01, 0.05, 0.1, 0.5])}
 
-n_samples, n_trials = 64, 1000
+n_samples, n_trials = 256, 1000
 
 compute_parscan(results_pickle, parscan_config, n_samples, n_trials)
 
 mse_leak, logp_leak, best_t, mse_coin, logp_coin = unpickle_results(results_pickle)
 mse_rat_avg = (mse_leak / mse_coin).mean(4)
 mse_rat_sem = (mse_leak / mse_coin).std(4) / np.sqrt(n_samples) 
-vmin, vmax  = 0.1 * np.floor(10 * mse_rat_avg.min()), 0.1 * np.ceil(10 * mse_rat_avg.max())
-plot_result_tensor(mse_rat_avg, mse_rat_sem, vmin, vmax, parscan_config, figname='mse_rat')
-
-#pooled_std   = np.sqrt(0.5 * mse_coin.std(4)**2 + 0.5 * mse_leak.std(4)**2)
-#mse_rat_coh  = (mse_leak.mean(4) - mse_coin.mean(4)) / pooled_std
+plot_results(mse_rat_avg, mse_rat_sem, parscan_config, figname='mse_rat')

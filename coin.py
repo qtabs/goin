@@ -327,7 +327,7 @@ class GenerativeModel():
 
 		return y
 
-	def sample_states(self, contexts):
+	def sample_states(self, contexts, return_pars=False):
 		"""Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
 		states x_t^c
 
@@ -335,12 +335,18 @@ class GenerativeModel():
 		----------
 		contexts : integer np.array
 			one-dimensional sequence of contexts 
+		return_pars: bool
+			also returns the retention and drift parameters for each context
+
 
 		Returns
 		-------
 		states : dict
 			dictionary encoding the latent state values (one-dimensional np.array) for each 
 			context c (keys).
+		a: retention parameters for each context (only if return_pars set to True)
+		d: drift parameters for each context (only if return_pars set to True)
+
 		"""
 
 		# Note that retention and drift are sampled in every call
@@ -355,7 +361,10 @@ class GenerativeModel():
 			for t in range(i0+1, len(contexts)):
 				states[c][t] = a[c] * states[c][t-1] + d[c] + w[t-i0-1]
 
-		return states
+		if return_pars:
+			return states, a, d
+		else:
+			return states
 
 	# Coin estimation
 	def estimate_coin(self, y, eng=None):
