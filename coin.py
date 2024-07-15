@@ -711,7 +711,7 @@ class GenerativeModel():
 		fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
 	# Benchmarks
-	def benchmark(self, n_trials=5000, n_instances=512, suffix=None, eng=None):
+	def benchmark(self, n_trials=1000, n_instances=16, suffix=None, eng=None):
 		"""Performs a thorough benchmarking of the generative model for the given number of trials. 
 		The function stores the benchmarks in a pickle for easy retrieval and only performs the
 		computations if the pickle file does not exist.
@@ -839,6 +839,9 @@ class GenerativeModel():
 
 			benchmark_kit = {'X': X, 'C': C, 'perf': perf, 'best_t': tau}
 
+			if not os.path.exists(os.path.split(benchmarkpath)[0]):
+				os.mkdir(os.path.split(benchmarkpath)[0])
+			
 			with open(benchmarkpath, 'wb') as f:
 				pickle.dump(benchmark_kit, f)
 
