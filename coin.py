@@ -1492,12 +1492,12 @@ class UrnGenerativeModel(GenerativeModel):
 			sequence of emitted cues
 		"""
 
-		N = np.zeros((max(c) + 1, 10)) # total N context ~ cue pairs
+		N = np.zeros((max(contexts) + 1, 10)) # total N context ~ cue pairs
 		
 		cues, N[0, 0] = [0], 1 # Initialisation (assuming cues[0] = 0)
 		beta = self._break_new_partition_([1], self.gamma_q)
 
-		for c_t in c:
+		for c_t in contexts[1:]:
 			cues.append(self._sample_customer_(beta, N, c_t, self.alpha_q)) # Sample cue
 			if cues[-1] == len(beta): # If opening a new cue:
 				beta = self._break_new_partition_(beta, self.gamma_q) 
