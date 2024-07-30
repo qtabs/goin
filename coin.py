@@ -138,7 +138,7 @@ class GenerativeModel():
 
 		return pars
 
-	# Sample generation parameters
+	# Auxiliary samplers
 	def _sample_N_(self, mu, si, N=1):
 		"""Samples from a normal distribution
 
@@ -183,7 +183,7 @@ class GenerativeModel():
 
 		return np.array(ss.truncnorm.rvs((a-mu)/si, (b-mu)/si, mu, si, N))
 
-	# Sample data
+	# Main data sampler
 	def generate_batch(self, n_trials, batch_size=1):
 		"""Generates a batch of data sampled from the generative model
 
@@ -365,6 +365,33 @@ class GenerativeModel():
 			return states, a, d
 		else:
 			return states
+
+	def order_contexts(self, contexts):
+		"""Reorders a list of contexts so that they appear in ascending order
+
+		Parameters
+		----------
+		contexts : list of arrays
+			sequence of contexts 
+
+		Returns
+		-------
+		ordered_contexts : list of arrays
+			sequence of contexts ordered in ascending order
+		
+		"""
+
+		c2c = dict()
+		ordered_contexts = np.zeros(self.n_trials, dtype=int)
+		next_c = 0
+
+		for t in range(len(contexts)):
+			if contexts[t] not in c2c.keys():
+				c2c[contexts[t]] = next_c
+				next_c += 1
+			ordered_contexts[t] = c2c[contexts[t]]
+
+		return list(ordered_contexts)
 
 	# Coin estimation
 	def estimate_coin(self, y, eng=None):
@@ -561,7 +588,43 @@ class GenerativeModel():
 			fig.set_size_inches(20, 3)
 			plt.savefig(f'{savefig}.png')
 
-	# Leaky integrator estimation
+	# Baselines and heuristic estimations
+	def theoretical_expected_beta(self, n_contexts=11):
+		"""Computes the theoretical expected value for the global distribution assuming contexts
+		are sampled from distributions beta ~ GEM(gamma_t). This distribution only matches the 
+		global distribution of contexts for the explicit method.
+
+		Parameters
+		----------
+		n_contexts : int (optional)
+			Maximum number of contexts considered
+
+		Returns
+		-------
+		e_beta : np.array
+			E[beta] distribution up to item n_contexts (note that e_beta.sum()<1)
+		"""
+		e_beta = [((self.gamma_t)**j) / ((1+self.gamma_t)**(j+1)) for j in range(n_contexts)]
+		return np.array(e_beta)
+
+	def empirical_expected_beta(self, n_contexts=11, n_trials=1000, n_samples=1000):
+		"""Computes the empirical expected value for the global distribution of contexts.
+
+		Parameters
+		----------
+		n_contexts : int (optional)
+			Maximum number of contexts considered
+
+		Returns
+		-------
+		e_beta : np.array
+			E[beta] distribution up to item n_contexts (note that e_beta.sum()<1)
+		"""
+		c = self.generate_context_batch(n_trials, n_samples)['C']
+		b = np.array([[(c[n] == ctx).mean() for ctx in range(n_contexts)] for n in range(n_samples)])
+
+		return b.mean(0)
+
 	def estimate_leaky_average(self, y, tau=None):
 		"""Runs a leaky integrator with integration time constant tau to generate predictions for
 		the observations hat{y}_t on the input sequence y_{1:t-1}.
@@ -711,7 +774,7 @@ class GenerativeModel():
 		fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
 	# Benchmarks
-	def benchmark(self, n_trials=1000, n_instances=16, suffix=None, eng=None):
+	def benchmark(self, n_trials=1000, n_instances=64, suffix=None, eng=None):
 		"""Performs a thorough benchmarking of the generative model for the given number of trials. 
 		The function stores the benchmarks in a pickle for easy retrieval and only performs the
 		computations if the pickle file does not exist.
@@ -746,7 +809,7 @@ class GenerativeModel():
 			with open(benchmarkpath, 'rb') as f:
 				benchmark_kit = pickle.load(f)
 		else:
-			minloglik = -100
+			minloglik = -4.6
 
 			print(f'### Computing benchmarks for {self.parset} ###')
 			t0 = time.time()
@@ -772,8 +835,9 @@ class GenerativeModel():
 			LI_ce  = p_slid.mean(1)
 			LI_ct_ac = (C[:, :, 0] == 0).mean(1) # LI assumed to predict always context 0
 			LI_ct_p  = (C[:, :, 0] == 0).mean(1)
-			LI_ct_ce = minloglik * (C[:, :, 0] != 0).mean(1)
-
+			e_beta = self.expected_beta(100)     # p_ctx not defined in LI: instead we use E[beta]
+			e_p = np.array([[e_beta[C[b,t,0]] for t in range(C.shape[1])] for b in range(C.shape[0])])
+			LI_ct_ce = np.log(e_p).mean(1)
 
 			print(f'Estimating coin...', flush=True)
 			z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng)
@@ -793,7 +857,8 @@ class GenerativeModel():
 				for ctx in range(lamb.shape[1]):
 					ctx_ix = np.where(C[b, :, 0] ==ctx)[0]
 					coin_ct_p[b] += np.nansum(lamb[b, ctx, ctx_ix]) / C.shape[1]
-					coin_ct_ce[b] += np.nansum(loglamb[b, ctx, ctx_ix]) / C.shape[1]
+					loglambs = np.maximum(minloglik, np.log(lamb[b, ctx, ctx_ix]))
+					coin_ct_ce[b] += np.nansum(loglambs) / C.shape[1]
 
 
 			perf = {'LI' :  {'mse': {}, 'kol': {}, 'ce': {}, 'ct_ac': {}, 'ct_p': {}, 'ct_ce': {}}, 
@@ -834,14 +899,14 @@ class GenerativeModel():
 			rat = perf['LI']['mse']['avg'] / perf['coin']['mse']['avg']
 			dif = perf['coin']['ct_ce']['avg'] - perf['LI']['ct_ce']['avg']
 			print(f'done! Time {(time.time()-t0)/60:.1f}m', end='; ')
-			print(f'mse_coin/mse_slid = {rat:.2f}', end='; ')
-			print(f'ce_coin - ce_slid = {dif:.2f}')
+			print(f'mse_slid/mse_coin = {rat:.2f}', end='; ')
+			print(f'lopg_ctx_coin - logp_ctx_slid = {dif:.2f}')
 
 			benchmark_kit = {'X': X, 'C': C, 'perf': perf, 'best_t': tau}
 
 			if not os.path.exists(os.path.split(benchmarkpath)[0]):
 				os.mkdir(os.path.split(benchmarkpath)[0])
-			
+
 			with open(benchmarkpath, 'wb') as f:
 				pickle.dump(benchmark_kit, f)
 
@@ -920,6 +985,11 @@ class ExplicitGenerativeModel(GenerativeModel):
 	first sampling the transition probability matrices and then simulating a Markov Chain. This 
 	method is an approximation. Cue emission has not been thoroughly tested.
 
+	This method is described in the COIN paper https://www.nature.com/articles/s41586-021-04129-3
+	but COIN inference is not optimal on its samples; this could be due to an implementation error
+	or to a misalignement between the parametrisations of the sampling and inference methods: use 
+	with caution
+
 	Additional Methods
 	-------
 	sample_pi_t(alpha, beta, rho)
@@ -957,7 +1027,7 @@ class ExplicitGenerativeModel(GenerativeModel):
 		   sample (a discrete probability distribution)
 		"""
 
-		pi_tilde = self._sample_GEM_(alpha, threshold=1E-5)
+		pi_tilde = self._sample_GEM_(alpha, threshold=1E-8)
 		theta    = random.choices(range(len(H)), H, k=len(pi_tilde))
 		G = pi_tilde @ np.eye(len(H))[theta]
 
@@ -1075,27 +1145,12 @@ class ExplicitGenerativeModel(GenerativeModel):
 		pi_t   = self.sample_pi_t(self.pars['alpha_t'], beta_t, self.pars['rho_t'])
 
 		# First context sampled from the global distribution
-		c = random.choices(range(len(beta_t)), beta_t)
+		contexts = random.choices(range(len(beta_t)), beta_t)
+		#contexts = [0]
 
 		n_ctx = len(beta_t)
 		for t in range(1, self.n_trials):
-			c += random.choices(range(n_ctx), pi_t[c[t-1], :])
-
-		# Next 12 lines re-order the context indices so that they always appear on ascending 
-		# order (ToDo: return also non-reordered list for the computation of average empirical pi)
-		c2c = dict()
-		contexts = np.zeros(self.n_trials, dtype=int)
-		next_c = 0
-
-		for t in range(self.n_trials):
-			if c[t] not in c2c.keys():
-				c2c[c[t]] = next_c
-				next_c += 1
-			contexts[t] = c2c[c[t]]
-
-		contexts = list(contexts)
-		# !! Reverting reordering of contexts
-		contexts = list(c)
+			contexts += random.choices(range(n_ctx), pi_t[contexts[t-1], :])
 
 		self.beta_t = beta_t
 		self.pi_t   = pi_t
@@ -1136,6 +1191,11 @@ class CRFGenerativeModel(GenerativeModel):
 	Extends GenerativeModel to include context and cue sampling using the Chinese Restaurant 
 	Franchise method. This method is exact. Cue emission has not been thoroughly tested.
 
+	This method is described in the COIN paper https://www.nature.com/articles/s41586-021-04129-3
+	but COIN inference is not optimal on its samples; this could be due to an implementation error
+	or to a misalignement between the parametrisations of the sampling and inference methods: use 
+	with caution
+
 	Additional Methods
 	-------
 	sample_contexts(seed=None, n_trials=None):
@@ -1150,8 +1210,7 @@ class CRFGenerativeModel(GenerativeModel):
 
 	# Observation sampling methods
 	def sample_contexts(self, seed=None, n_trials=None):
-		"""Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-		independent sample of pi_t and beta_t.
+		"""Samples a sequence of contexts by simulating a sticky CRF process.
 
 		Parameters
 		----------
@@ -1163,9 +1222,8 @@ class CRFGenerativeModel(GenerativeModel):
 
 		Returns
 		-------
-		contexts : np.array 
-			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one for
-			compatibility with pytorch
+		contexts : list or integers
+			sequence of sampled contexts
 		"""
 
 		if seed is not None:
@@ -1231,31 +1289,23 @@ class CRFGenerativeModel(GenerativeModel):
 			# Next context is current dish
 			c[t+1] = dish
 
-		# Order contexts from 0 to n_contexts
-		c2c = dict()
-		contexts = np.zeros(self.n_trials, dtype=int)
-		n_contexts = 0
+		contexts = list(c)
 
-		for t in range(self.n_trials):
-			if c[t] not in c2c.keys():
-				c2c[c[t]] = n_contexts
-				n_contexts += 1
-			contexts[t] = c2c[c[t]]
-
-		return list(contexts)
+		return contexts
 
 	def sample_cues(self, contexts):
-		"""Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-		Cue emission has not been thoroughly tested
+
+		"""Samples a sequence of cues by simulating a CRF process.
+		Cue sampling has not been thoroughly tested
 
 		Parameters
 		----------
-		contexts : np.array
+		contexts : list of integers
 			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
 
 		Returns
 		-------
-		cues : np.array 
+		cues : list of integers
 			sequence of emitted cues
 		"""
 		
@@ -1309,17 +1359,152 @@ class CRFGenerativeModel(GenerativeModel):
 			# emitted cue is current dish
 			q[t] = dish
 
-		# Order cues from 0 to n_cues
-		q2q    = dict()
-		cues   = np.zeros(n_trials, dtype=int)
-		n_cues = 0
+		cues = list(q)
 
-		for t in range(n_trials):
-			if q[t] not in q2q.keys():
-				q2q[q[t]] = n_cues
-				n_cues += 1
-			cues[t] = q2q[q[t]]
+		return cues
 
+
+class UrnGenerativeModel(GenerativeModel):
+	"""
+	Extends GenerativeModel to include context and cue sampling using using an unkown method
+	resembling Polya's Urn. The method is exact. Cue emission has not been thoroughly tested.
+
+	This method is not described in the COIN paper 
+	https://www.nature.com/articles/s41586-021-04129-3
+	but COIN inference is optimal on its samples
+
+	Additional Methods
+	-------
+	sample_contexts(seed=None, n_trials=None):
+		Samples a sequence of contexts.
+
+	sample_cues(contexts):
+		Samples a sequence of cues.
+	"""
+
+	def __init__(self, parset):
+		super().__init__(parset)
+
+	# Auxiliary functions
+	def _break_new_partition_(self, beta, gamma):
+		"""Runs one stick-breaking step of the GEM distribution
+
+		Parameters
+		----------
+		beta : list
+			Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
+		 	to the measure that has not yet been assigned
+
+		Returns
+		-------
+		beta: list
+		   Partition of a stick of measure 1 with one more partition (len(beta) 
+		   increased by one)
+		"""
+
+		w = ss.beta.rvs(1, gamma) # Stick-breaking weight
+		beta.append((1-w) * beta[-1])
+		beta[-2] = w * beta[-2]
+		return beta
+
+	def _sample_customer_(self, beta, N, j, alpha, kappa=0):
+		"""Samples one customer from a CRF-like discrete distribution with or without
+		a self-transition bias
+
+		Parameters
+		----------
+		beta : list
+			Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
+		 	to the measure that has not yet been assigned
+		N    : 
+			Customer-table counts; N[j, :] corresponds to the counts for the current
+			restaurant j
+		j    : 	
+			Current restaurant
+		kappa: 
+			Self-transition bias (set to 0 for a non-sticky process)
+
+
+		Returns
+		-------
+		beta: list
+		   Partition of a stick of measure 1 with one more partition (len(beta) 
+		   increased by one)
+		"""
+		beta_w   = alpha * np.array(beta)
+		sticky_w = 0 if kappa == 0 else kappa * np.eye(len(beta))[j]
+		global_w = N[j, 0:len(beta)]
+		return random.choices(range(len(beta)), beta_w + sticky_w + global_w, k=1)[0]
+
+	# Observation sampling methods
+	def sample_contexts(self, seed=None, n_trials=None):
+		"""Samples a sequence of contexts by simulating a markov chain. Each call uses an 
+		independent sample of pi_t and beta_t.
+
+		Parameters
+		----------
+		seed : int (optional)
+			random seed for the generation of the sequence (useful for parallelisation)
+		n_trials : int
+			number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
+			is readout from self.n_trials
+
+		Returns
+		-------
+		contexts : list or integers
+			sequence of sampled contexts
+		"""
+
+		if seed is not None:
+			np.random.seed(seed)
+		if n_trials is not None: 
+			self.n_trials = n_trials
+
+		kappa_t = self.alpha_t * self.rho_t / (1 - self.rho_t)
+		N = np.zeros((10, 10))  # total N context transitions
+		
+		contexts, N[0, 0] = [0], 1  # Initialisation (assuming contexts[0] = 0)
+		beta = self._break_new_partition_([1], self.gamma_t)
+
+		for t in range(1, self.n_trials):
+			# Sample context
+			contexts.append(self._sample_customer_(beta, N, contexts[t-1], self.alpha_t, kappa_t))
+			if contexts[-1] == len(beta)-1: # If opening a new context:
+				beta = self._break_new_partition_(beta, self.gamma_t)
+				if contexts[-1] > N.shape[0] - 1: # pad N if contexts > max_ctx
+					N = np.pad(N, (0, N.shape[0]), (0, N.shape[0]))
+			N[contexts[-2], contexts[-1]] += 1  # Add transition count 
+
+		return contexts
+
+	def sample_cues(self, contexts):
+		"""Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
+		Cue emission has not been thoroughly tested
+
+		Parameters
+		----------
+		contexts : list of integers
+			sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
+
+		Returns
+		-------
+		cues : list of integers
+			sequence of emitted cues
+		"""
+
+		N = np.zeros((max(c) + 1, 10)) # total N context ~ cue pairs
+		
+		cues, N[0, 0] = [0], 1 # Initialisation (assuming cues[0] = 0)
+		beta = self._break_new_partition_([1], self.gamma_q)
+
+		for c_t in c:
+			cues.append(self._sample_customer_(beta, N, c_t, self.alpha_q)) # Sample cue
+			if cues[-1] == len(beta): # If opening a new cue:
+				beta = self._break_new_partition_(beta, self.gamma_q) 
+				if cues[-1] > N.shape[0] - 1: # pad N if cues > max_cues
+					N = np.pad(N, (0, N.shape[0]), (0, 0))
+			N[c_t, cues[-1]] += 1  # Add cue-context association count 
+			
 		return cues
 
 
