@@ -835,7 +835,8 @@ class GenerativeModel():
 			LI_ce  = p_slid.mean(1)
 			LI_ct_ac = (C[:, :, 0] == 0).mean(1) # LI assumed to predict always context 0
 			LI_ct_p  = (C[:, :, 0] == 0).mean(1)
-			e_beta = self.expected_beta(100)     # p_ctx not defined in LI: instead we use E[beta]
+			# p_ctx not defined in LI --> we predict instead the empirical global distribution across c
+			e_beta = self.empirical_expected_beta(n_trials=n_trials, n_samples=100*n_instances) 
 			e_p = np.array([[e_beta[C[b,t,0]] for t in range(C.shape[1])] for b in range(C.shape[0])])
 			LI_ct_ce = np.log(e_p).mean(1)
 
@@ -1471,8 +1472,8 @@ class UrnGenerativeModel(GenerativeModel):
 			contexts.append(self._sample_customer_(beta, N, contexts[t-1], self.alpha_t, kappa_t))
 			if contexts[-1] == len(beta)-1: # If opening a new context:
 				beta = self._break_new_partition_(beta, self.gamma_t)
-				if contexts[-1] > N.shape[0] - 1: # pad N if contexts > max_ctx
-					N = np.pad(N, (0, N.shape[0]), (0, N.shape[0]))
+				if len(beta) > N.shape[0]: # pad N if contexts > max_ctx
+					N = np.pad(N, ((0, N.shape[0]), (0, N.shape[0])))
 			N[contexts[-2], contexts[-1]] += 1  # Add transition count 
 
 		return contexts
@@ -1502,7 +1503,7 @@ class UrnGenerativeModel(GenerativeModel):
 			if cues[-1] == len(beta): # If opening a new cue:
 				beta = self._break_new_partition_(beta, self.gamma_q) 
 				if cues[-1] > N.shape[0] - 1: # pad N if cues > max_cues
-					N = np.pad(N, (0, N.shape[0]), (0, 0))
+					N = np.pad(N, ((0, N.shape[0]), (0, 0)))
 			N[c_t, cues[-1]] += 1  # Add cue-context association count 
 			
 		return cues
