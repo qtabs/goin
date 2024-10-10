@@ -12,7 +12,7 @@ import os
 import time
 import copy
 from icecream import ic 
-DEV='cpu' # Default device; can be overwritten when instantiating Model and GruRNN
+DEV='cuda' # Default device; can be overwritten when instantiating Model and GruRNN
 
 
 class GruRNN(nn.Module):
@@ -158,7 +158,7 @@ class Model():
 		Auxiliary function that sets up the torch optimiser and a learning-rate scheduler before
 		training
 
-	set_losslog(savename, resume):
+	set_losslog(savename, resume, n_batches):
 		Auxiliary function that sets up (and loads, if the training is being resumed) the loss 
 		history of the optimisation process
 
@@ -195,7 +195,7 @@ class Model():
 		the COIN paper.
 	"""
 
-	def __init__(self, modelpath=None, sigma_r=0.1, dev=DEV, **pars):
+	def __init__(self, modelpath=None, sigma_r=0.03, dev=DEV, **pars):
 
 		self.dev      = dev
 		self.sigma_r  = sigma_r
@@ -219,7 +219,10 @@ class Model():
 		if modelpath[0] != '/':
 			if './models' not in modelpath:
 				modelpath = './models/' + modelpath
-		self.model.load_state_dict(torch.load(modelpath))
+		
+		# print(f'loading weights from {modelpath}')
+		weights = torch.load(modelpath, map_location=torch.device(self.dev))
+		self.model.load_state_dict(weights)
 		self.model.gru.flatten_parameters() 
 
 	def save_weights(self, modelpath, epoch=None):
@@ -450,7 +453,7 @@ class Model():
 
 		# Hardcoded parameters
 		n_trials, batch_size, batch_res = self.load_opt_defaults()
-		tolerance = -9999#0.001 # Number of SEMs above COIN performance for early training halting
+		tolerance = -10E10 # Number of SEMs above COIN performance for early training halting
 
 		# Setting up optimisation
 		self.model.train()
@@ -458,7 +461,7 @@ class Model():
 		lossfunc = nn.GaussianNLLLoss()
 
 		# Preparing/loading loss log
-		lossHistory, epoch0, logpath = self.set_losslog(savename, resume)
+		lossHistory, epoch0, logpath = self.set_losslog(savename, resume, n_batches)
 
 		# Setting up GM and benchmarks
 		# gm = coin.CRFGenerativeModel(parset)
@@ -505,11 +508,11 @@ class Model():
 			print(f' ----- Epoch {e} done! Epoch time = {(time.time()-epocht0)/60:.1f} minutes')
 			mse = self.training_log(lossHistory, epoch0, batch_res, savename, benchmarks)[0]
 
-			if mse < mse_target:
-				mse_target_s  = f'{benchmarks["perf"]["coin"]["mse"]["avg"]:.3f}'
-				mse_target_s += f'+{tolerance:.3f} x {benchmarks["perf"]["coin"]["mse"]["sem"]:.3f}'
-				print(f'MSE target reached ({mse:.3f} < {mse_target_s})!')
-				break
+			#if mse < mse_target:
+			#	mse_target_s  = f'{benchmarks["perf"]["coin"]["mse"]["avg"]:.3f}'
+			#	mse_target_s += f'+{tolerance:.3f} x {benchmarks["perf"]["coin"]["mse"]["sem"]:.3f}'
+			#	print(f'MSE target reached ({mse:.3f} < {mse_target_s})!')
+			#	break
 
 		print('###### END OF TRAINING ######\n')
 
@@ -538,14 +541,14 @@ class Model():
 
 		# Hardcoded paramters
 		n_trials, batch_size, batch_res = self.load_opt_defaults()
-		tolerance = 0.01 # Number of SEMs above COIN ctx accuracy for early training halting
+		tolerance = -10E10 # Number of SEMs above COIN ctx accuracy for early training halting
 
 		# Setting up optimisation
 		self.model.train()
 		n_epochs,n_batches,opt,lr_scheduler = self.set_optim(lr, train_sched, optimise='out_lamb')
 
 		# Preparing/loading loss log
-		lossHistory, epoch0, logpath = self.set_losslog(savename, resume)
+		lossHistory, epoch0, logpath = self.set_losslog(savename, resume, n_batches)
 
 		# Setting up GM and benchmarks
 		gm = coin.UrnGenerativeModel(parset)
@@ -597,11 +600,11 @@ class Model():
 			print(f' ----- Epoch {e} done! Epoch time = {(time.time()-epocht0)/60:.1f} minutes')
 			acc = self.training_log(lossHistory, epoch0, batch_res, savename, benchmarks)[1]
 
-			if acc > acc_target:
-				acc_target_s  = f'{benchmarks["perf"]["coin"]["ct_ac"]["avg"]:.3f}'
-				acc_target_s += f'+{tolerance:.3f} x {benchmarks["perf"]["coin"]["ct_ac"]["sem"]:.3f}'
-				print(f'Accuracy target reached ({acc:.3f} > {acc_target_s})!')
-				break
+			#if acc > acc_target:
+			#	acc_target_s  = f'{benchmarks["perf"]["coin"]["ct_ac"]["avg"]:.3f}'
+			#	acc_target_s += f'+{tolerance:.3f} x {benchmarks["perf"]["coin"]["ct_ac"]["sem"]:.3f}'
+			#	print(f'Accuracy target reached ({acc:.3f} > {acc_target_s})!')
+			#	break
 
 		print(f'###### END OF CTX-TRAINING TRAINING ######\n')
 
@@ -658,7 +661,7 @@ class Model():
 		n_epochs,n_batches,opt,lr_scheduler = self.set_optim(lr, train_sched, freeze=freeze)
 
 		# Preparing/loading loss log
-		lossHistory, epoch0, logpath = self.set_losslog(savename, resume)
+		lossHistory, epoch0, logpath = self.set_losslog(savename, resume, n_batches)
 
 		# Setting up GM and benchmarks
 		gm = coin.UrnGenerativeModel(parset)
@@ -842,7 +845,7 @@ class Model():
 
 		return n_epochs, n_batches, opt, lr_scheduler
 
-	def set_losslog(self, savename, resume):
+	def set_losslog(self, savename, resume, n_batches):
 		""" Auxiliary function that sets up (and loads, if the training is being resumed) the loss 
 		history of the optimisation process
 
@@ -864,9 +867,10 @@ class Model():
 			with open(logpath, 'r') as f:
 				for line in [lin for lin in f.read().split("\n") if lin !='']:
 					loadedLoss.append(float(line.replace('\t', ',').split(',')[0]))
-			loadedLoss = np.array(loadedLoss)
-			epoch0 = int(np.round(len(loadedLoss) / (n_batches/batch_res)))
-			n_points = int(len(loadedLoss) / epoch0)
+			loadedLoss  = np.array(loadedLoss)
+			batch_res   = self.load_opt_defaults()[2]
+			epoch0      = int(len(loadedLoss) / (n_batches/batch_res))
+			n_points    = int(len(loadedLoss) / epoch0)
 			lossHistory = [list(loadedLoss[(n0*n_points):((n0+1)*n_points)]) for n0 in range(epoch0)]
 		else:
 			if os.path.exists(logpath):
@@ -927,9 +931,9 @@ class Model():
 			every how many batches the loss is written down to the loss history
 		"""
 
-		n_trials     = 1000
+		n_trials     = 5000
 		batch_res    = 10   # Store and report loss every batch_res batches
-		batch_size   = 64
+		batch_size   = 128
 
 		return n_trials, batch_size, batch_res
 	
@@ -1527,7 +1531,12 @@ def find_latest(modname, pars=None):
 	if modname[0] != '/' and modname[0] != './':
 		modname = './models/' + modname
 
-	return sorted(glob.glob(f'{modname}_e*'))[-1].split('/')[-1]
+	modpaths = sorted(glob.glob(f'{modname}_e*'))
+	
+	if len(modpaths) > 0:
+		return modpaths[-1].split('/')[-1]
+	else:
+		return None
 
 
 def summary_stats_fit(modkey, subs=None):
@@ -1656,6 +1665,8 @@ def estimate_subject_fits(modkey, subs=None):
 				U[key]['data'][s] = Usub[key].mean(0)
 
 	return U
+
+
 
 
 

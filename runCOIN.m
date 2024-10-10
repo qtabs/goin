@@ -2,7 +2,7 @@
 function [mu, logp, cump, lamb, a, d] = runCOIN(y, parlist, parvals)
 
 	for b = 1:size(y, 1)
-		[mu(b, :), logp(b, :), cump(b, :), lamb(b, :, :), a(b, :, :), d(b, :, :)] = call_coin(y(b, :), parlist, parvals);
+		[mu(b, :), logp(b), cump(b, :), lamb(b, :, :), a(b, :, :), d(b, :, :)] = call_coin(y(b, :), parlist, parvals);
 	end
 
 end
@@ -28,8 +28,8 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns)
 	
 	out  = obj.simulate_COIN;
 	mu   = zeros(length(y), nruns);
-	cump = zeros(length(y) * nruns, 1);
-	logp = zeros(length(y), nruns);
+	cump = [];
+	logp = zeros(nruns, 1);
 	lamb = zeros(obj.max_contexts + 1, length(y), nruns);
 	a    = zeros(obj.max_contexts + 1, length(y), nruns);
 	d    = zeros(obj.max_contexts + 1, length(y), nruns);
@@ -44,7 +44,7 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns)
 		p_y_parts = sum((lambda_parts./(sqrt(2*pi)*sigma_parts)) .* exp(-(y_parts-mu_parts).^2 ./ (2 * sigma_parts.^2)), 1);
 		
 		mu(:, i)      = reshape(mean(sum(lambda_parts .* mu_parts, 1), 2), [1, length(y)]); 
-		logp(:, i)    = reshape(log(max(mean(p_y_parts, 2), eps)), [1, length(y)]);
+		logp(i)       = mean(log(max(mean(p_y_parts, 2), eps)));
 		lamb(:, :, i) = reshape(mean(lambda_parts, 2), [size(lambda_parts, 1), length(y)]);
 		a(:, :, i)    = reshape(mean(out.runs{i}.retention, 2), [size(lambda_parts, 1), length(y)]);
 		d(:, :, i)    = reshape(mean(out.runs{i}.drift,     2), [size(lambda_parts, 1), length(y)]);
@@ -53,7 +53,7 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns)
 	end
 
 	mu   = mean(mu, 2);
-	logp = max(logp(:)) + log(sum(exp(logp - max(logp(:))), 2)) - log(nruns);
+	logp = max(logp) + log(sum(exp(logp - max(logp)))) - log(nruns);
 	lamb = mean(lamb, 3);
 	a = mean(a, 3);
 	d = mean(d, 3);
@@ -80,7 +80,11 @@ function obj = instantiate_coin(parlist, parvals)
  	obj.add_observation_noise = false;
 	obj.verbose = false;
 	obj.particles = 100;
-	obj.sigma_motor_noise = sqrt(obj.sigma_sensory_noise^2 - 0.03^2);
-	obj.sigma_sensory_noise = 0.03;
+	obj.sigma_motor_noise = 0;
+	
+	%% Following two lines would be the accurate way to represent subject parametrisations
+	%obj.sigma_motor_noise = sqrt(obj.sigma_sensory_noise^2 - 0.03^2);
+	%obj.sigma_sensory_noise = 0.03;
 
 end
+

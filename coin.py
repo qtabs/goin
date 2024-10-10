@@ -668,7 +668,7 @@ class GenerativeModel():
 			z_slid[:, t, :] = np.einsum('bT,Tm->bm', y[:,:t], w)
 			s_slid[:, t, :] = np.sqrt(np.einsum('bTm,Tm->bm', (y[:, :t, np.newaxis] - z_slid[:, :t,:])**2, w))
 
-		logp = (-0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y[:,:,np.newaxis]) / s_slid) ** 2)
+		logp = -0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y[:,:,np.newaxis]) / s_slid)**2
 		cump = 0.5 * (1 + scipy.special.erf((y[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
 
 		if len(tau) == 1:
@@ -774,7 +774,7 @@ class GenerativeModel():
 		fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
 	# Benchmarks
-	def benchmark(self, n_trials=1000, n_instances=64, suffix=None, eng=None):
+	def benchmark(self, n_trials=1000, n_instances=256, suffix=None, eng=None, save=True):
 		"""Performs a thorough benchmarking of the generative model for the given number of trials. 
 		The function stores the benchmarks in a pickle for easy retrieval and only performs the
 		computations if the pickle file does not exist.
@@ -837,8 +837,10 @@ class GenerativeModel():
 			LI_ct_p  = (C[:, :, 0] == 0).mean(1)
 			# p_ctx not defined in LI --> we predict instead the empirical global distribution across c
 			e_beta = self.empirical_expected_beta(n_trials=n_trials, n_samples=100*n_instances) 
-			e_p = np.array([[e_beta[C[b,t,0]] for t in range(C.shape[1])] for b in range(C.shape[0])])
-			LI_ct_ce = np.log(e_p).mean(1)
+			LI_ct_ce = np.zeros(C.shape[0])
+			for b in range(C.shape[0]):
+				for ctx in range(len(e_beta)):
+					LI_ct_ce[b] += np.log(e_beta[ctx]) * (C[b, :, 0] == ctx).mean()
 
 			print(f'Estimating coin...', flush=True)
 			z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng)
@@ -908,8 +910,9 @@ class GenerativeModel():
 			if not os.path.exists(os.path.split(benchmarkpath)[0]):
 				os.mkdir(os.path.split(benchmarkpath)[0])
 
-			with open(benchmarkpath, 'wb') as f:
-				pickle.dump(benchmark_kit, f)
+			if save:
+				with open(benchmarkpath, 'wb') as f:
+					pickle.dump(benchmark_kit, f)
 
 			print(f'###################################')
 			print()
