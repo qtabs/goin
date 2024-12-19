@@ -1,8 +1,10 @@
 function addCoinPaths()
-	coin_base       = '/home/tabs/Cloud/Projects/ContInf/Libs/repos/COIN/';
-	thirdparty_base = '/home/tabs/Cloud/Projects/ContInf/Libs/thirdparty/';
+	coin_base       = 'C:/Users/cleme/OneDrive/Documents/BCBL/Workspace/COIN/';
+	thirdparty_base = 'C:/Users/cleme/OneDrive/Documents/BCBL/Workspace/thirdparty/';
+    goin_base       = 'C:/Users/cleme/OneDrive/Documents/BCBL/Workspace/goin/';
 	addpath(coin_base);
 	addpath(thirdparty_base);
+	addpath(goin_base);
 	addpath([thirdparty_base, 'npbayes-r21/utilities']);
 	addpath([thirdparty_base, 'npbayes-r21/distributions/multinomial']);
 	addpath([thirdparty_base, 'npbayes-r21/hdpmix']);

@@ -1,12 +1,16 @@
 import sys
-sys.path.append('../')
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import coin
 import numpy as np
-import os
 import time
 import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+import codecs
+
+sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
 
 
 def unpickle_results(results_pickle):
@@ -25,7 +29,7 @@ def unpickle_results(results_pickle):
 	return(mse_leak, logp_leak, best_t, mse_coin, logp_coin, ebeta_ctx, coin_ctx)
 
 
-def compute_parscan(results_pickle, parscan_config, n_samples, n_trials):
+def compute_parscan(genmodel_func, results_pickle, parscan_config, n_samples, n_trials):
 
 	n_par_vals = tuple([len(parscan_config[p]) for p in parscan_config.keys()])
 
@@ -72,7 +76,8 @@ def compute_parscan(results_pickle, parscan_config, n_samples, n_trials):
 		pars = coin.load_pars('validation')
 		pars.update(new_pars)
 		# gm = coin.CRFGenerativeModel({'pars': pars, 'name': parsetname})
-		gm = coin.UrnGenerativeModel({'pars': pars, 'name': parsetname})
+		# gm = coin.UrnGenerativeModel({'pars': pars, 'name': parsetname})
+		gm = genmodel_func({'pars': pars, 'name': parsetname})
 
 		print('Computing ', end=' ', flush=True)
 
@@ -86,8 +91,8 @@ def compute_parscan(results_pickle, parscan_config, n_samples, n_trials):
 		t0 = time.time()
 		best_t[N] = gm.fit_best_tau(n_trials, 10 * n_samples)
 		z_leak, logp_leak_all = gm.estimate_leaky_average(X)[:2]
-		mse_leak[N]  = ((z_leak - X)**2).mean(1)
-		logp_leak[N] = logp_leak_all.sum(1) 
+		mse_leak[N]  = ((z_leak - X)**2).mean(1) # Global mean value over n_samples and n_trials?
+		logp_leak[N] = logp_leak_all.sum(1)  # .sum(1)? # Reason to delete axis 1: code expects log to be n_samples, n_trials ("same dimensional arrangement as y") but runCOIN.m script specifies logp as one-dim n_samples-long
 		e_beta       = gm.empirical_expected_beta(n_trials=n_trials)
 		logp_ebeta   = [[np.log(e_beta[C[b, t]]) for t in range(n_trials)] for b in range(n_samples)]
 		ebeta_ctx[N] = np.array(logp_ebeta).mean(1)
@@ -98,7 +103,7 @@ def compute_parscan(results_pickle, parscan_config, n_samples, n_trials):
 		print('[COIN ', end=' ', flush=True)
 		z_coin, logp_coin_all, _, lamb = gm.estimate_coin(X, eng)
 		mse_coin[N]   = ((z_coin - X)**2).mean(1)
-		logp_coin[N]  = logp_coin_all.sum(1) 
+		logp_coin[N]  = logp_coin_all.sum(1)  # .sum(1)? # Reason to delete axis 1: code expects log to be n_samples, n_trials ("same dimensional arrangement as y") but runCOIN.m script specifies logp as one-dim n_samples-long
 		logp_ctx_coin = [[np.log(lamb[b,C[b,t],t]) for t in range(n_trials)] for b in range(n_samples)]
 		coin_ctx[N]   = np.array(logp_ctx_coin).mean(1)
 		print(f'{(time.time()-t0)/60:.1f}min]', end=' ', flush=True)
@@ -144,7 +149,7 @@ def recompute_nan_trials(results_pickle, parscan_config, n_trials):
 		parsetname = '_'.join([f'{p}-{1000* new_pars[p]:03.0f}' for p in new_pars])
 		pars = coin.load_pars('validation')
 		pars.update(new_pars)
-		gm = coin.UrnGenerativeModel({'pars': pars, 'name': parsetname})
+		gm = coin.UrnGenerativeModel({'pars': pars, 'name': parsetname}) # TODO: replace with more optimal
 
 		print('Computing ', end=' ', flush=True)
 
@@ -173,7 +178,7 @@ def recompute_nan_trials(results_pickle, parscan_config, n_trials):
 		z_coin, logp_coin_all, _, lamb = gm.estimate_coin(X, eng)
 
 		mse_coin[N][nan_samples]  = ((z_coin - X)**2).mean(1)
-		logp_coin[N][nan_samples] = logp_coin_all.sum(1) 
+		logp_coin[N][nan_samples] = logp_coin_all.sum()  # .sum(1)
 		logp_ctx_coin = [[np.log(lamb[b,C[b,t],t]) for t in range(n_trials)] for b in range(C.shape[0])]
 		coin_ctx[N][nan_samples]  = np.array(logp_ctx_coin).mean(1)
 
@@ -225,27 +230,43 @@ def plot_results(mean, sem, parscan_config, scale=0.1, figname=None):
 		plt.savefig(f'{figname}.png')
 
 
-results_pickle = './parscan.pickle'
 
-# config must have four parameters
-parscan_config =  {'rho_t':   np.array([0.20, 0.40, 0.60, 0.80, 0.99]),
-				   'alpha_t': np.array([0.1, 0.5, 1.0, 5.0, 10.0]),
-		           'mu_a':    np.array([0.1, 0.25, 0.5, 0.75, 0.9]),
-		           'si_d':    np.array([0.005, 0.01, 0.05, 0.1, 0.5])}
+if __name__ == '__main__':
+    
+    
+	# config must have four parameters
+	parscan_config =  {'rho_t':   np.array([0.20, 0.40, 0.60, 0.80, 0.99]),	
+					'alpha_t': np.array([0.1, 0.5, 1.0, 5.0, 10.0]),
+					'mu_a':    np.array([0.1, 0.25, 0.5, 0.75, 0.9]),
+					'si_d':    np.array([0.005, 0.01, 0.05, 0.1, 0.5])}
 
-n_samples, n_trials = 256, 1000
+	n_samples, n_trials = 2, 5  # 256, 1000
+ 
+	# Compare gen model formulations
+	genmodel_variants = {'ExplicitGenerativeModel': coin.ExplicitGenerativeModel, 
+                      'CRFGenerativeModel': coin.CRFGenerativeModel,
+                      'UrnGenerativeModel': coin.UrnGenerativeModel}
+	
+	for variant in genmodel_variants:
+		print("Gen. model variant: ", variant)		
+  
+		genmodel_func = genmodel_variants[variant]
+		
+		results_pickle = f'./parscan_{variant}.pickle' # TODO: diff results & benchmarks
 
-compute_parscan(results_pickle, parscan_config, n_samples, n_trials)
-recompute_nan_trials(results_pickle, parscan_config, n_trials)
+		compute_parscan(genmodel_func, results_pickle, parscan_config, n_samples, n_trials)
+		recompute_nan_trials(results_pickle, parscan_config, n_trials)
 
-mse_leak, logp_leak, best_t, mse_coin, logp_coin, ebeta_ctx, coin_ctx = unpickle_results(results_pickle)
+		mse_leak, logp_leak, best_t, mse_coin, logp_coin, ebeta_ctx, coin_ctx = unpickle_results(results_pickle)
 
-mse_rat_avg = (mse_leak / mse_coin).mean(4)
-mse_rat_sem = (mse_leak / mse_coin).std(4) 
-plot_results(mse_rat_avg, mse_rat_sem, parscan_config, scale=0.1, figname='mse_rat')
+		mse_rat_avg = (mse_leak / mse_coin).mean(4)
+		mse_rat_sem = (mse_leak / mse_coin).std(4) 
+		plot_results(mse_rat_avg, mse_rat_sem, parscan_config, scale=0.1, figname='mse_rat')
 
-ctx_diff_avg = (coin_ctx - ebeta_ctx).mean(4)
-ctx_diff_sem = (coin_ctx - ebeta_ctx).std(4)
-plot_results(ctx_diff_avg, ctx_diff_sem, parscan_config, scale=0.01, figname='ctx_logp_dif')
+		ctx_diff_avg = (coin_ctx - ebeta_ctx).mean(4)
+		ctx_diff_sem = (coin_ctx - ebeta_ctx).std(4)
+		plot_results(ctx_diff_avg, ctx_diff_sem, parscan_config, scale=0.01, figname='ctx_logp_dif')
+  
+		
 
 
