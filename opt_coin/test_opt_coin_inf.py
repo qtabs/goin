@@ -4,7 +4,7 @@ import time
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from COIN_Python import coin as coinp
 from goin import coin as coin
 
@@ -22,6 +22,10 @@ def unpickle_results(results_pickle):
 def load_and_compare(filename):
     
     data = unpickle_results(filename)
+    
+    # Aggregate data
+    for config_k in data.keys():
+        pass
     
 
 
@@ -42,7 +46,7 @@ def store_inf_results(filename, C, logp, lamb, t, variant, k, new_pars, version)
     
     if lamb is not None:
         n_samples, n_trials = C.shape[0], C.shape[1]
-        logp_c = np.array([[np.log(lamb[b,C[b,t],t]) for t in range(n_trials)] for b in range(n_samples)])
+        logp_c = np.array([[np.log(lamb[batch,C[batch,t],t]) for t in range(n_trials)] for batch in range(n_samples)])
     else:
         logp_c = np.log(C[:, :] == 0)
         
@@ -71,14 +75,11 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
     if mode == 'matlab':
         eng = coin.initialise_matlab_engine()
 
-
     # Define all combinations of hyperparameters values provided in config_values
     n_par_vals = tuple([len(config_values[p]) for p in config_values.keys()])
     configs = [(n0, n1, n2) for n0 in range(n_par_vals[0]) for n1 in range(n_par_vals[1]) 
 						   for n2 in range(n_par_vals[2])]
     
-
-
         
     # Store inference predictions: predicted observations, log proba of input sequence, conetext responsibilities 
     data = {}
@@ -127,14 +128,27 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
                 
         
         # Store
+        # Note: average over samples or time points
         data_config = {'gamma_t': new_pars['gamma_t'],
                         'alpha_t': new_pars['alpha_t'],
                         'rho_t': new_pars['rho_t'],
-                        'Python': {'time': t, 'logp_y': logp_coin, 'logp_c': logp_c_coin},
-                        'Leaky': {'time': t_LI, 'logp_y': logp_LI, 'logp_c': logp_c_LI}}
+                        'Python': {'time': t,
+                                   'logp_y_avg':logp_coin.mean(1),
+                                   'logp_y_sum':logp_coin.sum(1),
+                                   'logp_c_avg': logp_c_coin.mean(1),
+                                   'logp_c_sum': logp_c_coin.sum(1)},
+                        'Leaky': {'time': t_LI,
+                                  'logp_y_avg': logp_LI.mean(1),
+                                  'logp_y_sum': logp_LI.sum(1),
+                                  'logp_c_avg': logp_c_LI.mean(1),
+                                  'logp_c_sum': logp_c_LI.sum(1)}}
         
         if mode == 'matlab':
-            data_config['Matlab'] = {'time': t_M, 'logp_y': logp_coin_M, 'logp_c': logp_c_coin_M}
+            data_config['Matlab'] = {'time': t_M,
+                                     'logp_y_avg': logp_coin_M.mean(1),
+                                     'logp_y_sum': logp_coin_M.sum(1),
+                                     'logp_c_avg': logp_c_coin_M.mean(1),
+                                     'logp_c_sum': logp_c_coin_M.sum(1)}
 
         
         data[k] = data_config
@@ -142,6 +156,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
         
         
     # Save the dictionary as a pickle file
+    # Saving the distributions of logp values (n_samples, n_trials) to keep time points information
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
         
@@ -173,19 +188,19 @@ def main():
 	# 				'gamma_t':    np.array([0.1, 10.0])}
     
     # Generative model sample draws
-    n_samples, n_trials = 5, 7 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
+    n_samples, n_trials = 512, 512 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
 
     # Inference runs    
     nruns = 1
     
-    # python and matlab, or only Python
-    mode = 'python'
+    # 'matlab': matlab and python, 'python': only Python
+    mode = 'matlab'
     
     # Results path
     filename = "comparison_results.pkl"
     
-    # run_multiple_config(filename, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode)
-    load_and_compare(filename)   
+    run_multiple_config(filename, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode)
+    # load_and_compare(filename)   
     
     # Later: find optimal hyperparam configuration and run comparison with it
 
