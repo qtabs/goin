@@ -5,7 +5,6 @@ import time
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from COIN_Python import coin as coinp
 from goin import coin as coin
 
 import pandas as pd
