@@ -1,6 +1,6 @@
 # environment.yml
 
-name: null
+name: coin
 channels:
   - pypi
   - defaults
