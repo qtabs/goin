@@ -485,38 +485,36 @@ class GenerativeModel():
         if eng is None:
             eng = initialise_matlab_engine()
 
-        match experiment:
+        if experiment == 'consistency':
+            x  = generate_field_sequence(experiment, self.si_r, 1, pStay=0.5)
+            nanix = np.where(np.isnan(x[0]))[0]
+            triplets = [ix for ix in nanix if ix+2 in nanix]
+            x0 = x[0, [t+1 for t in triplets], :]
 
-            case 'consistency':
-                x  = generate_field_sequence(experiment, self.si_r, 1, pStay=0.5)
-                nanix = np.where(np.isnan(x[0]))[0]
-                triplets = [ix for ix in nanix if ix+2 in nanix]
-                x0 = x[0, [t+1 for t in triplets], :]
-
-                pStayList, u = [0.1, 0.5, 0.9], dict()
-                for p in pStayList:
-                    x  = generate_field_sequence(experiment, self.si_r, N, pStay=p)
-                    u0 = self.estimate_coin(x, eng)[0]
-                    u[p] = np.stack([u0[:, t+2]-u0[:,t] for t in triplets], axis=1)
-
-            case 'interference':
-                nPlusList, u = [0, 13, 41, 112, 230, 369], dict()
-                for nPlus in nPlusList:
-                    x = generate_field_sequence(experiment, self.si_r, N, Np=nPlus)
-                    u[nPlus] = self.estimate_coin(x, eng)[0][:, (160+nPlus):]
-                x0 = x[0, 160+nPlus:, 0]
-
-            case 'savings':
-                x = generate_field_sequence(experiment, self.si_r, N)
+            pStayList, u = [0.1, 0.5, 0.9], dict()
+            for p in pStayList:
+                x  = generate_field_sequence(experiment, self.si_r, N, pStay=p)
                 u0 = self.estimate_coin(x, eng)[0]
-                t0, t1, dur = 60, 60+125+15+50+50+60, 125
-                u = {'first': u0[:, t0:(t0+dur)], 'second': u0[:, t1:(t1+dur)]}
-                x0 = x[0, t0:(t0+dur), 0]
+                u[p] = np.stack([u0[:, t+2]-u0[:,t] for t in triplets], axis=1)
 
-            case 'spontaneous' | 'evoked':
-                x = generate_field_sequence(experiment, self.si_r, N)
-                u = self.estimate_coin(x, eng)[0]
-                x0 = x[0, :, 0]
+        elif experiment == 'interference':
+            nPlusList, u = [0, 13, 41, 112, 230, 369], dict()
+            for nPlus in nPlusList:
+                x = generate_field_sequence(experiment, self.si_r, N, Np=nPlus)
+                u[nPlus] = self.estimate_coin(x, eng)[0][:, (160+nPlus):]
+            x0 = x[0, 160+nPlus:, 0]
+
+        elif experiment == 'savings':
+            x = generate_field_sequence(experiment, self.si_r, N)
+            u0 = self.estimate_coin(x, eng)[0]
+            t0, t1, dur = 60, 60+125+15+50+50+60, 125
+            u = {'first': u0[:, t0:(t0+dur)], 'second': u0[:, t1:(t1+dur)]}
+            x0 = x[0, t0:(t0+dur), 0]
+
+        if experiment == 'spontaneous' or experiment == 'evoked':
+            x = generate_field_sequence(experiment, self.si_r, N)
+            u = self.estimate_coin(x, eng)[0]
+            x0 = x[0, :, 0]
 
         if axs is not None:
             plot_experiment(u, experiment, axs=axs, cmap="Greens")
@@ -1571,52 +1569,51 @@ def load_pars(parset):
             pars['alpha_q'] = 10. 
         else:
             pars = {}
-            match parset:
-                case 'fitted': # Average of evoked+spontaneous across subjects = implementation
-                    pars['alpha_t'] = 9.0
-                    pars['gamma_t'] = 0.1    # Not reported; set to coin's implementation
-                    pars['rho_t']   = 0.25
-                    pars['alpha_q'] = 25.0   # Not fitted; set to COIN implementation
-                    pars['gamma_q'] = 0.1    # Not fitted; set to COIN implementation
-                    pars['mu_a']    = 0.9425
-                    pars['si_a']    = 0.0012
-                    pars['si_d']    = 0.0008
-                    pars['si_q']    = 0.0089
-                    pars['si_r']    = 0.03   # Not reported; set to coin's implementation
-                case 'validation':
-                    pars['alpha_t'] = 10.0
-                    pars['gamma_t'] = 0.1    # Not reported; set to coin's implementation
-                    pars['rho_t']   = 0.9
-                    pars['alpha_q'] = 10.
-                    pars['gamma_q'] = 0.1    # Not reported; set to coin's implementation
-                    pars['mu_a']    = 0.9
-                    pars['si_a']    = 0.1
-                    pars['si_d']    = 0.1
-                    pars['si_q']    = 0.1
-                    pars['si_r']    = 0.03   # Not reported; set to coin's implementation
-                case 'training':
-                    pars = load_pars('validation')
-                    pars['gamma_t'] = 0.2
-                    pars['rho_t']   = 0.93
-                    pars['mu_a']    = 0.01
-                    pars['si_a']    = 0.2
-                    pars['si_d']    = 1.0
-                case 'transitions':
-                    pars = load_pars('validation')
-                    pars['gamma_t'] = 1.5
-                    pars['alpha_t'] = 0.1
-                    pars['rho_t']   = 0.4
-                    pars['mu_a']    = 0.01
-                    pars['si_a']    = 0.2
-                    pars['si_d']    = 1.0
-                case 'transglobal':
-                    pars = load_pars('validation')
-                    pars['gamma_t'] = 1.2
-                    pars['alpha_t'] = 9.0
-                    pars['rho_t']   = 0.6
-                    pars['mu_a']    = 0.01
-                    pars['si_a']    = 0.2
-                    pars['si_d']    = 1.0
+            if parset == 'fitted': # Average of evoked+spontaneous across subjects = implementation
+                pars['alpha_t'] = 9.0
+                pars['gamma_t'] = 0.1    # Not reported; set to coin's implementation
+                pars['rho_t']   = 0.25
+                pars['alpha_q'] = 25.0   # Not fitted; set to COIN implementation
+                pars['gamma_q'] = 0.1    # Not fitted; set to COIN implementation
+                pars['mu_a']    = 0.9425
+                pars['si_a']    = 0.0012
+                pars['si_d']    = 0.0008
+                pars['si_q']    = 0.0089
+                pars['si_r']    = 0.03   # Not reported; set to coin's implementation
+            elif parset == 'validation':
+                pars['alpha_t'] = 10.0
+                pars['gamma_t'] = 0.1    # Not reported; set to coin's implementation
+                pars['rho_t']   = 0.9
+                pars['alpha_q'] = 10.
+                pars['gamma_q'] = 0.1    # Not reported; set to coin's implementation
+                pars['mu_a']    = 0.9
+                pars['si_a']    = 0.1
+                pars['si_d']    = 0.1
+                pars['si_q']    = 0.1
+                pars['si_r']    = 0.03   # Not reported; set to coin's implementation
+            elif parset == 'training':
+                pars = load_pars('validation')
+                pars['gamma_t'] = 0.2
+                pars['rho_t']   = 0.93
+                pars['mu_a']    = 0.01
+                pars['si_a']    = 0.2
+                pars['si_d']    = 1.0
+            elif parset == 'transitions':
+                pars = load_pars('validation')
+                pars['gamma_t'] = 1.5
+                pars['alpha_t'] = 0.1
+                pars['rho_t']   = 0.4
+                pars['mu_a']    = 0.01
+                pars['si_a']    = 0.2
+                pars['si_d']    = 1.0
+            elif parset == 'transglobal':
+                pars = load_pars('validation')
+                pars['gamma_t'] = 1.2
+                pars['alpha_t'] = 9.0
+                pars['rho_t']   = 0.6
+                pars['mu_a']    = 0.01
+                pars['si_a']    = 0.2
+                pars['si_d']    = 1.0
         return(pars)
 
 
@@ -1993,23 +1990,22 @@ def plot_experiment(u, experiment, axs=None, cmap="Blues", legsuffix=''):
     if axs is None:
         fig, axs = plt.subplots(1,1)
 
-    match experiment:
-        case 'consistency':
-            labels = dict([(key, f'pstay = {key:.1f} {legsuffix}') for key in u])
-            xlabel = 'block number'
-            ylabel = 'single trial learning'
-        case 'interference':
-            labels = dict([(key, f'N+ = {key:d} {legsuffix}') for key in u])
-            xlabel = 'trials after field change'
-            ylabel = 'field prediction'
-        case 'savings':
-            labels = dict([(key, f'{key} encounter {legsuffix}') for key in u])
-            xlabel = 'trials after field change'
-            ylabel = 'field prediction'
-        case 'spontaneous' | 'evoked':
-            labels = {'data': None if legsuffix == '' else legsuffix}
-            xlabel = 'trial number'
-            ylabel = 'field prediction'	
+    if experiment == 'consistency':
+        labels = dict([(key, f'pstay = {key:.1f} {legsuffix}') for key in u])
+        xlabel = 'block number'
+        ylabel = 'single trial learning'
+    elif experiment == 'interference':
+        labels = dict([(key, f'N+ = {key:d} {legsuffix}') for key in u])
+        xlabel = 'trials after field change'
+        ylabel = 'field prediction'
+    elif experiment == 'savings':
+        labels = dict([(key, f'{key} encounter {legsuffix}') for key in u])
+        xlabel = 'trials after field change'
+        ylabel = 'field prediction'
+    elif experiment == 'spontaneous' | 'evoked':
+        labels = {'data': None if legsuffix == '' else legsuffix}
+        xlabel = 'trial number'
+        ylabel = 'field prediction'	
 
     colours = dict([(k, c) for k, c in zip(u, mcp.gen_color(cmap, len(u)+1, True)[:-1])])
 
