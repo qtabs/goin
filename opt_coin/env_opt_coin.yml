@@ -2,6 +2,7 @@ name: coin
 channels:
   - pypi
   - defaults
+  - conda-forge
 dependencies:
   - bzip2=1.0.8
   - ca-certificates=2024.9.24
@@ -30,7 +31,6 @@ dependencies:
   - pure_eval=0.2.2
   - python=3.12.7
   - python-dateutil=2.9.0post0
-  - pywin32=305
   - pyzmq=25.1.2
   - setuptools=75.1.0
   - six=1.16.0
@@ -39,8 +39,6 @@ dependencies:
   - tk=8.6.14
   - tornado=6.4.1
   - traitlets=5.14.3
-  - vc=14.40
-  - vs2015_runtime=14.40.33807
   - wcwidth=0.2.5
   - wheel=0.44.0
   - xz=5.4.6
@@ -73,4 +71,7 @@ dependencies:
     - seaborn==0.13.2
     - tqdm==4.66.5
     - tzdata==2024.2
-prefix: C:\Users\cleme\anaconda3\envs\coin
+    - vc==14.40
+    - vs2015_runtime==14.40.33807
+    - pywin32==305
+prefix: coin
