@@ -198,7 +198,7 @@ def main():
     mode = 'matlab'
     
     # Results path
-    filename = os.path.join("C:\\Users\\cleme\\OneDrive\\Documents\\BCBL\\Workspace\\goin\\opt_coin", "comparison_results_small3.pkl")    
+    filename = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comparison_results_small.pkl")    
     run_multiple_config(filename, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode)
     # load_and_compare(filename)   
     
