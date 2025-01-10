@@ -1746,52 +1746,50 @@ def generate_field_sequence(experiment, noise=0.03, batch_size=1, **kwargs):
             is set to one for compatibility with pytorch
     """
 
-    match experiment:
+    if experiment == 'spontaneous':
+        F = [[(0, 50), (+1, 125), (-1, 15), (np.nan, 150)] for _ in range(batch_size)]
 
-        case 'spontaneous':
-            F = [[(0, 50), (+1, 125), (-1, 15), (np.nan, 150)] for _ in range(batch_size)]
+    elif experiment == 'evoked':
+        F = [[(0, 50), (+1, 125), (-1, 15), (+1, 2), (np.nan, 150)] for _ in range(batch_size)]
 
-        case 'evoked':
-            F = [[(0, 50), (+1, 125), (-1, 15), (+1, 2), (np.nan, 150)] for _ in range(batch_size)]
+    elif experiment == 'savings':
+        exposure = [(0, 60), (+1, 125), (-1, 15), (np.nan, 50)]
+        F = [exposure + [(0, 50)] + exposure for _ in range(batch_size)]
 
-        case 'savings':
-            exposure = [(0, 60), (+1, 125), (-1, 15), (np.nan, 50)]
-            F = [exposure + [(0, 50)] + exposure for _ in range(batch_size)]
+    elif experiment == 'interference':
+        Np = kwargs['Np'] 
+        F = [[(0, 160), (1, Np), (-1, 115)] for _ in range(batch_size)]
 
-        case 'interference':
-            Np = kwargs['Np'] 
-            F = [[(0, 160), (1, Np), (-1, 115)] for _ in range(batch_size)]
+    elif experiment == 'consistency':
+        Np, pStay = 30, kwargs['pStay']
+            
+        # Closure-of-block segment composed of: 2 channel trials, 10 washouts, 1 triplet
+        f1 = [(np.nan, 2), (0, 10)] + [(np.nan, 1), (1, 1), (np.nan, 1)]
 
-        case 'consistency':
-            Np, pStay = 30, kwargs['pStay']
-                
-            # Closure-of-block segment composed of: 2 channel trials, 10 washouts, 1 triplet
-            f1 = [(np.nan, 2), (0, 10)] + [(np.nan, 1), (1, 1), (np.nan, 1)]
-
-            F = []
-            for batch in range(batch_size):
-                f = [(0, 10)] #[(0, 156)]
-                # Determine the duration of the +1/-1 environment fields stochastically
-                for block in range(6):
-                    durs = [0]
-                    while max(durs) < 2 or min(durs) < 1 or sum(durs) != Np or len(durs) < 2:
-                        nChunks = (np.random.rand(Np) > pStay).sum() + 1 # n_changes + 1
-                        alpha = (abs(5*np.random.randn()) + 0.5,) * nChunks
-                        durs  = np.rint(Np*np.random.dirichlet(alpha)).astype(int)
-                    while sum(durs[0::2]) != sum(durs[1::2]):
-                        if sum(durs[0::2]) > sum(durs[1::2]):
-                            ix1 = np.random.choice(np.where(durs[0::2] > 1)[0], 1)[0]
-                            ix2 = np.random.randint(len(durs[1::2]))
-                            durs[0::2][ix1] -= 1
-                            durs[1::2][ix2] += 1
-                        else:
-                            ix1 = np.random.randint(len(durs[0::2]))
-                            ix2 = np.random.choice(np.where(durs[1::2] > 1)[0], 1)[0]
-                            durs[0::2][ix1] += 1
-                            durs[1::2][ix2] -= 1
-                    n0 = np.random.randint(2)
-                    f += [((-1)**(n+n0), dur) for n, dur in enumerate(durs)] + f1
-                F.append(f)
+        F = []
+        for batch in range(batch_size):
+            f = [(0, 10)] #[(0, 156)]
+            # Determine the duration of the +1/-1 environment fields stochastically
+            for block in range(6):
+                durs = [0]
+                while max(durs) < 2 or min(durs) < 1 or sum(durs) != Np or len(durs) < 2:
+                    nChunks = (np.random.rand(Np) > pStay).sum() + 1 # n_changes + 1
+                    alpha = (abs(5*np.random.randn()) + 0.5,) * nChunks
+                    durs  = np.rint(Np*np.random.dirichlet(alpha)).astype(int)
+                while sum(durs[0::2]) != sum(durs[1::2]):
+                    if sum(durs[0::2]) > sum(durs[1::2]):
+                        ix1 = np.random.choice(np.where(durs[0::2] > 1)[0], 1)[0]
+                        ix2 = np.random.randint(len(durs[1::2]))
+                        durs[0::2][ix1] -= 1
+                        durs[1::2][ix2] += 1
+                    else:
+                        ix1 = np.random.randint(len(durs[0::2]))
+                        ix2 = np.random.choice(np.where(durs[1::2] > 1)[0], 1)[0]
+                        durs[0::2][ix1] += 1
+                        durs[1::2][ix2] -= 1
+                n0 = np.random.randint(2)
+                f += [((-1)**(n+n0), dur) for n, dur in enumerate(durs)] + f1
+            F.append(f)
 
     fields = np.array([np.concatenate([[s[0]] * s[1] for s in f]) for f in F])
     fields = fields + noise * np.random.randn(*fields.shape)

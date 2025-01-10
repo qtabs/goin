@@ -40,7 +40,8 @@ def compute_logpc(C, lamb=None):
 
 
 def store_inf_results(filename, C, logp, lamb, t, variant, k, new_pars, version):
-    """Update df_results with performance and metainformation from an inference estimation"""
+    """Update df_results with performance and metainformation from an inference estimation
+    """
     
     
     if lamb is not None:
@@ -127,7 +128,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
                 
         
         # Store
-        # Note: average over samples or time points
+        # Note: average over time points: get one value per sample
         data_config = {'gamma_t': new_pars['gamma_t'],
                         'alpha_t': new_pars['alpha_t'],
                         'rho_t': new_pars['rho_t'],
@@ -155,7 +156,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
         
         
     # Save the dictionary as a pickle file
-    # Saving the distributions of logp values (n_samples, n_trials) to keep time points information
+    # Save distributions of samples' logp values (avged over timepoints, as done above) for each config
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
         
@@ -179,15 +180,16 @@ def main():
     # p(y=y_t|y_1:t-1)
     
     # Set configuration params: define possible parameter values
-    config_values =  {'rho_t':   np.array([0.10, 0.50, 0.90]),	
-					'alpha_t': np.array([0.1, 1.0, 10.0]),
-					'gamma_t':    np.array([0.1, 1.0, 10.0])}
-    # config_values =  {'rho_t':   np.array([0.10, 0.90]),	
-	# 				'alpha_t': np.array([0.1, 10.0]),
-	# 				'gamma_t':    np.array([0.1, 10.0])}
+    # config_values =  {'rho_t':   np.array([0.10, 0.50, 0.90]),	
+	# 				'alpha_t': np.array([0.1, 1.0, 10.0]),
+	# 				'gamma_t':    np.array([0.1, 1.0, 10.0])}
+    config_values =  {'rho_t':   np.array([0.10, 0.90]),	
+					'alpha_t': np.array([0.1, 10.0]),
+					'gamma_t':    np.array([0.1, 10.0])}
     
     # Generative model sample draws
-    n_samples, n_trials = 512, 512 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
+    # n_samples, n_trials = 512, 512 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
+    n_samples, n_trials = 2, 5 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
 
     # Inference runs    
     nruns = 1
@@ -196,8 +198,7 @@ def main():
     mode = 'matlab'
     
     # Results path
-    filename = "comparison_results.pkl"
-    
+    filename = os.path.join("C:\\Users\\cleme\\OneDrive\\Documents\\BCBL\\Workspace\\goin\\opt_coin", "comparison_results_small3.pkl")    
     run_multiple_config(filename, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode)
     # load_and_compare(filename)   
     
