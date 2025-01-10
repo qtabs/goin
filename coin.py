@@ -16,7 +16,8 @@ import time
 from pathos.multiprocessing import ProcessingPool
 import collections.abc
 from icecream import ic
-from mycolorpy import colorlist as mcp
+# from mycolorpy import colorlist as mcp
+import matplotlib.cm as cm
 import pathlib
 
 import sys
@@ -2007,7 +2008,9 @@ def plot_experiment(u, experiment, axs=None, cmap="Blues", legsuffix=''):
         xlabel = 'trial number'
         ylabel = 'field prediction'	
 
-    colours = dict([(k, c) for k, c in zip(u, mcp.gen_color(cmap, len(u)+1, True)[:-1])])
+    # colours = dict([(k, c) for k, c in zip(u, mcp.gen_color(cmap, len(u)+1, True)[:-1])]) # with mycolorpy
+    cmap_ = cm.get_cmap(cmap)
+    colours = colours = {k: cmap_(i / (len(u))) for i, k in enumerate(u)} # with matlaplotlib cm
 
     for key in u:
         if type(u[key]) is dict:
