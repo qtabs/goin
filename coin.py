@@ -27,6 +27,8 @@ import COIN_Python.coin as coinp
 import functools
 import multiprocessing
 
+from tqdm import tqdm
+
 class GenerativeModel():
     """
     Base class for the Explicit and CRF Generative Model classes. Provides for basic methods
@@ -216,7 +218,13 @@ class GenerativeModel():
 
         # Next line ensures all instances are sampled with different seeds
         seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
+        
         res = self.pool.map(self.generate_session, seeds)
+
+        # parallel_generate_session = functools.partial(self.generate_session)
+        # with multiprocessing.Pool() as pool:
+        #     res = pool.map(parallel_generate_session, seeds)
+
 
         y = np.concatenate([r[0][None, ...] for r in res], axis=0)
         q = np.concatenate([r[1][None, ...] for r in res], axis=0)
@@ -251,6 +259,10 @@ class GenerativeModel():
         seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
 
         res = self.pool.map(self.sample_contexts, seeds)
+
+        # parallel_generate_session = functools.partial(self.generate_session)
+        # with multiprocessing.Pool() as pool:
+        #     res = pool.map(parallel_generate_session, seeds)
 
         batch = dict()
         if type(res[0]) is list:
@@ -401,7 +413,7 @@ class GenerativeModel():
         return list(ordered_contexts)
 
     # Coin estimation
-    def estimate_coin(self, y, mode="matlab", eng=None, nruns=10):
+    def estimate_coin(self, y, mode="matlab", eng=None, nruns=10, n_ctx=10, max_cores=1):
         """Runs the COIN inference algorithm on a batch of observations
         Requires MATLAB and the COIN inference implementation (https://github.com/jamesheald/COIN)
         OR the Python version
@@ -454,10 +466,10 @@ class GenerativeModel():
                     parvals.append(self.pars[p])
 
         if mode == 'matlab':
-            Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), nargout=6)
+            Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), matlab.int64(n_ctx), matlab.int64(max_cores), nargout=6)
             z_coin, logp, cump, lamb = np.array(Z[0]), np.array(Z[1]), np.array(Z[2]), np.array(Z[3])
         else: # 'python':
-            z_coin, logp, cump, lamb, _, _ = runCOIN(y, parlist, parvals, nruns=nruns)
+            z_coin, logp, cump, lamb, _, _ = runCOIN(y, parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
 
         return(z_coin, logp, cump, lamb)
 
@@ -655,10 +667,10 @@ class GenerativeModel():
             cumulative probabilities of the input sequence y_t. Useful to measure calibration.
 
         """
-        if tau is None:
-            if not hasattr(self, 'best_t'):
-                self.fit_best_tau(n_trials = y.shape[1])
-            tau = self.best_t
+        # if tau is None:
+        #     if not hasattr(self, 'best_t'):
+        #         self.fit_best_tau(n_trials = y.shape[1])
+        #     tau = self.best_t
 
         if type(tau) != np.ndarray:
             tau = np.array([tau])
@@ -694,11 +706,19 @@ class GenerativeModel():
     def estimate_leaky_average_parallel(self, X, tau=None):
         """Call estimate_leaky_average with multiprocessing pool wrapper"""
         
+       # Moved ahead of estimate_leaky_average for multiprocessing issues 
+        if tau is None:
+            if not hasattr(self, 'best_t'):
+                self.fit_best_tau(n_trials = X[0][None, ...].shape[1])
+            tau = self.best_t
+
         parallel_function = functools.partial(self.estimate_leaky_average)
-        with multiprocessing.Pool() as pool:
+        with multiprocessing.Pool() as pool: # multiprocessing.Pool()
            res = pool.starmap(parallel_function, [(x[None, ...], tau) for x in X])
+
+        # res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
+
         temp = res
-        # res = self.pool.map(self.estimate_leaky_average, [(x[None, ...], tau) for x in X])
         
         z_slid    = np.array([r[0][0, :] for r in temp])
         logp    = np.array([r[1][0, :] for r in temp])
@@ -2097,7 +2117,7 @@ def load_group_data():
 
 
         
-def instantiate_coin(parlist, parvals):
+def instantiate_coin(parlist, parvals, max_cores=1):
     inf = coinp.COIN()
     
     # Set coin inference parameters according to user passed parameters list and values
@@ -2105,8 +2125,7 @@ def instantiate_coin(parlist, parvals):
         setattr(inf, parlist[i], float(parvals[i]))
 
     inf.store = ['predicted_probabilities', 'state_var', 'state_mean', 'drift', 'retention', 'average_state']
-    inf.runs = 1
-    inf.max_cores = 0
+    inf.max_cores = max_cores
     inf.particles = 100
     inf.sigma_motor_noise = 0
     
@@ -2114,14 +2133,17 @@ def instantiate_coin(parlist, parvals):
     
     
 
-def call_coin(y, parlist=[], parvals=[], nruns=10):
+def call_coin(y, parlist=[], parvals=[], nruns=10, n_ctx=10, max_cores=1):
     y = np.squeeze(y)       
     
-    inf = instantiate_coin(parlist, parvals)
+    inf = instantiate_coin(parlist, parvals, max_cores=1)
     
     inf.runs = nruns
-    inf.max_cores = nruns
+    # inf.max_cores = nruns # NOTE: Translated from runCOIN.m but probably wrong in Matlab script 
     inf.perturbations = y
+
+    inf.max_contexts = n_ctx
+
 
     out  = inf.simulate_coin()
     mu   = np.zeros((len(y), nruns))
@@ -2182,7 +2204,7 @@ def call_coin(y, parlist=[], parvals=[], nruns=10):
     return mu_, logp_, cump_, lamb_, a_, d_
 
 
-def runCOIN(y, parlist, parvals, nruns=10):
+def runCOIN(y, parlist, parvals, nruns=10, n_ctx=10, max_cores=1):
     """_summary_
 
     Args:
@@ -2208,8 +2230,8 @@ def runCOIN(y, parlist, parvals, nruns=10):
 
     mu, logp, cump, lamb, a, d = [], [], [], [], [], []
     
-    for b in range(y.shape[0]):
-        mu_b, logp_b, cump_b, lamb_b, a_b, d_b = call_coin(y[b, :], parlist, parvals, nruns=nruns)
+    for b in tqdm(range(y.shape[0])):
+        mu_b, logp_b, cump_b, lamb_b, a_b, d_b = call_coin(y[b, :], parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
         mu.append(mu_b)
         logp.append(logp_b)
         cump.append(cump_b)
