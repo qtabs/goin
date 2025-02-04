@@ -1,4 +1,4 @@
-function [mu_, logp_, cump_, lamb_, a_, d_] = runCOIN(y, parlist, parvals, nruns, n_ctx)
+function [mu_, logp_, cump_, lamb_, a_, d_] = runCOIN(y, parlist, parvals, nruns, n_ctx, max_cores)
 
     % Expected to return mu_ with dim (n_samples, n_trials), logp_ (1, n_samples)
     
@@ -7,13 +7,13 @@ function [mu_, logp_, cump_, lamb_, a_, d_] = runCOIN(y, parlist, parvals, nruns
     end
 
 	for b = progress(1:size(y, 1))
-		[mu_(b, :), logp_(b, :), cump_(b, :), lamb_(b, :, :), a_(b, :, :), d_(b, :, :)] = call_coin(y(b, :), parlist, parvals, nruns, n_ctx);
+		[mu_(b, :), logp_(b, :), cump_(b, :), lamb_(b, :, :), a_(b, :, :), d_(b, :, :)] = call_coin(y(b, :), parlist, parvals, nruns, n_ctx, max_cores);
     end
 
 end
 
 
-function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_ctx)
+function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_ctx, max_cores)
     % Returns mu with dim (len(y), 1)
 
 	if nargin == 1
@@ -25,10 +25,13 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_
 	obj = instantiate_coin(parlist, parvals);
 
 	obj.runs = nruns;
+	obj.max_contexts = n_ctx;
+	obj.max_cores = max_cores;
+
+
 	% obj.max_cores = nruns;
 	obj.perturbations = y;
 
-	obj.max_contexts = n_ctx;
 	
 	out  = obj.simulate_COIN;
 	mu   = zeros(length(y), nruns);

@@ -14,7 +14,7 @@ function addCoinPaths()
 	cd([thirdparty_base 'lightspeed']);
 	install_lightspeed;
 	cd(originalDir);
-	matlab.addons.toolbox.installToolbox('/bcbl/home/home_a-f/clevyfidel/Workspace/thirdparty/Truncated Multivariate Student and Normal.mltbx')
+	matlab.addons.toolbox.installToolbox('/bcbl/home/home_a-f/clevyfidel/Workspace/thirdparty/Truncated Multivariate Student and Normal.mltbx');
 	addpath([thirdparty_base, 'MatlabProgressBar']);
 	evalc('parpool()');
 end

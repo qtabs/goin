@@ -466,6 +466,9 @@ class GenerativeModel():
                     parvals.append(self.pars[p])
 
         if mode == 'matlab':
+            if max_cores==None:
+                # max_cores==None in Python defaults to the maximum number of cores available, but in Matlab it needs to be assessed and passed explicitely
+                max_cores = int(eng.feature('numCores')) # returns max number of physical cores (Matlab does not allow hyperthreading)
             Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), matlab.int64(n_ctx), matlab.int64(max_cores), nargout=6)
             z_coin, logp, cump, lamb = np.array(Z[0]), np.array(Z[1]), np.array(Z[2]), np.array(Z[3])
         else: # 'python':
@@ -667,10 +670,10 @@ class GenerativeModel():
             cumulative probabilities of the input sequence y_t. Useful to measure calibration.
 
         """
-        # if tau is None:
-        #     if not hasattr(self, 'best_t'):
-        #         self.fit_best_tau(n_trials = y.shape[1])
-        #     tau = self.best_t
+        if tau is None:
+            if not hasattr(self, 'best_t'):
+                self.fit_best_tau(n_trials = y.shape[1])# However fit_best_tau should be called before so as to avoid nested processing pool 
+            tau = self.best_t
 
         if type(tau) != np.ndarray:
             tau = np.array([tau])
@@ -705,12 +708,6 @@ class GenerativeModel():
     
     def estimate_leaky_average_parallel(self, X, tau=None):
         """Call estimate_leaky_average with multiprocessing pool wrapper"""
-        
-       # Moved ahead of estimate_leaky_average for multiprocessing issues 
-        if tau is None:
-            if not hasattr(self, 'best_t'):
-                self.fit_best_tau(n_trials = X[0][None, ...].shape[1])
-            tau = self.best_t
 
         parallel_function = functools.partial(self.estimate_leaky_average)
         with multiprocessing.Pool() as pool: # multiprocessing.Pool()
@@ -2117,7 +2114,7 @@ def load_group_data():
 
 
         
-def instantiate_coin(parlist, parvals, max_cores=1):
+def instantiate_coin(parlist, parvals):
     inf = coinp.COIN()
     
     # Set coin inference parameters according to user passed parameters list and values
@@ -2125,7 +2122,6 @@ def instantiate_coin(parlist, parvals, max_cores=1):
         setattr(inf, parlist[i], float(parvals[i]))
 
     inf.store = ['predicted_probabilities', 'state_var', 'state_mean', 'drift', 'retention', 'average_state']
-    inf.max_cores = max_cores
     inf.particles = 100
     inf.sigma_motor_noise = 0
     
@@ -2136,14 +2132,14 @@ def instantiate_coin(parlist, parvals, max_cores=1):
 def call_coin(y, parlist=[], parvals=[], nruns=10, n_ctx=10, max_cores=1):
     y = np.squeeze(y)       
     
-    inf = instantiate_coin(parlist, parvals, max_cores=1)
+    inf = instantiate_coin(parlist, parvals)
     
     inf.runs = nruns
+    inf.max_contexts = n_ctx
+    inf.max_cores = max_cores
+
     # inf.max_cores = nruns # NOTE: Translated from runCOIN.m but probably wrong in Matlab script 
     inf.perturbations = y
-
-    inf.max_contexts = n_ctx
-
 
     out  = inf.simulate_coin()
     mu   = np.zeros((len(y), nruns))

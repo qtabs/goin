@@ -15,6 +15,8 @@ import csv
 
 from tqdm import tqdm
 
+import warnings
+
 def unpickle_results(results_pickle):
 
     with open(results_pickle, 'rb') as f:
@@ -92,7 +94,9 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
         e_beta = gm.empirical_expected_beta(n_samples=n_samples, n_trials=n_trials, n_contexts=max(n_ctx, 10))
             
         # Leaky integrator inference
-        t0 = time.time()            
+        t0 = time.time()
+        # should fit best tau before calling estimate_leaky_average:
+        gm.fit_best_tau(n_trials, 10 * n_samples)             
         z_LI, logp_LI, _= gm.estimate_leaky_average_parallel(Y)
         logp_c_LI = compute_logpc(C, lamb=None, e_beta=e_beta)
         t_LI = (time.time()-t0)/60
@@ -148,6 +152,8 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
         
     
 def main():
+
+    warnings.filterwarnings('ignore')
     
     # Apply Heald's inference
     # z_coin : np.array
@@ -173,8 +179,8 @@ def main():
 	# 				'gamma_t':    np.array([0.1, 10.0])}
     
     # Generative model sample draws
-    n_samples, n_trials = 512, 512 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
-    # n_samples, n_trials = 10, 5 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
+    # n_samples, n_trials = 512, 512 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
+    n_samples, n_trials = 10, 5 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
 
     # Inference runs    
     nruns = 1
@@ -183,10 +189,10 @@ def main():
     mode = 'matlab'
     
     # Define number of cores used
-    max_cores = 0
+    max_cores = None
 
     # Results path
-    filename = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comparison_results_large.pkl")    
+    filename = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comparison_results_progress_cores.pkl")    
     run_multiple_config(filename, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode, max_cores=max_cores)
     # load_and_compare(filename)   
     
