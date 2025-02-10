@@ -16,6 +16,7 @@ import csv
 from tqdm import tqdm
 
 import warnings
+import argparse
 
 def unpickle_results(results_pickle):
 
@@ -152,6 +153,11 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
         
     
 def main():
+    
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('-o', '--output', help='output file name', default="inference_results")
+    args = parser.parse_args()
+    filename = args.output
 
     warnings.filterwarnings('ignore')
     
@@ -192,8 +198,10 @@ def main():
     max_cores = None
 
     # Results path
-    filename = os.path.join(os.path.dirname(os.path.realpath(__file__)), "comparison_results_progress_cores.pkl")    
-    run_multiple_config(filename, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode, max_cores=max_cores)
+    if not os.path.exists(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")):
+        os.makedirs(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output"))
+    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", f"{filename}.pkl")    
+    run_multiple_config(filepath, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode, max_cores=max_cores)
     # load_and_compare(filename)   
     
     # Later: find optimal hyperparam configuration and run comparison with it
