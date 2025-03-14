@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import time
 
 import sys
@@ -7,11 +6,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 from goin import coin as coin
 
-import pandas as pd
 import pickle
-
-import multiprocessing
-import csv
 
 from tqdm import tqdm
 
@@ -155,9 +150,14 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
 def main():
     
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('-o', '--output', help='output file name', default="inference_results")
+    parser.add_argument('-o', '--output', help='output file name', type=str, default="inference_results")
+    parser.add_argument('-s', '--samples', help='number of samples', type=int, default=512)
+    parser.add_argument('-t', '--trials', help='number of trials', type=int, default=512)
     args = parser.parse_args()
+
     filename = args.output
+    n_samples = args.samples
+    n_trials = args.trials
 
     warnings.filterwarnings('ignore')
     
@@ -192,7 +192,7 @@ def main():
     nruns = 1
     
     # 'matlab': matlab and python, 'python': only Python
-    mode = 'matlab'
+    mode = 'python'
     
     # Define number of cores used
     max_cores = None
@@ -200,10 +200,14 @@ def main():
     # Results path
     if not os.path.exists(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")):
         os.makedirs(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output"))
-    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", f"{filename}.pkl")    
+    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", f"{filename}.pkl")
     run_multiple_config(filepath, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode, max_cores=max_cores)
-    # load_and_compare(filename)   
-    
+
+    # Verify that the file has been saved
+    if os.path.exists(filepath): print(f"Results saved in {filepath}")
+    else: print("Results file not found")   
+
+
     # Later: find optimal hyperparam configuration and run comparison with it
 
 
