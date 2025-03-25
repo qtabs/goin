@@ -72,7 +72,7 @@ def dirichlet_func(x, val):
 
 
 def sample_obs(y_std, y_dvt, ctx, sigma_sampling_noise):
-    freq = y_std * dirichlet_func(ctx, 0) + y_dvt * dirichlet_func(ctx, 1) + sigma_sampling_noise * np.random.rand()
+    freq = y_std * dirichlet_func(ctx, 0) + y_dvt * dirichlet_func(ctx, 1) + sigma_sampling_noise * np.random.randn()
     return freq
 
 
@@ -143,7 +143,7 @@ def generate_observations(mu_a = 0.85, si_a = 0.05, si_d = 5, sigma_freq_noise =
     return Cs, ys, y_stds, y_dvts
 
 
-def plot_variables(Cs, ys, y_stds, y_dvts):
+def plot_contexts_states_obs(Cs, ys, y_stds, y_dvts):
 
     fig, ax1 = plt.subplots(figsize=(10, 6))
     ax1.plot(y_stds, label='y_std', color='green', linestyle='dotted', linewidth=2)
@@ -160,7 +160,9 @@ def plot_variables(Cs, ys, y_stds, y_dvts):
     fig.tight_layout()
     plt.show()
 
-def plot_results_contexts(Cs, c_hat, logp_c):
+
+
+def plot_contexts_inference(Cs, c_hat, logp_c):
     fig, ax1 = plt.subplots(figsize=(10, 6))
     ax1.plot(range(T), Cs, 'bo', label='C', linewidth=2)
     ax1.plot(range(T), c_hat.squeeze(), 'ro', label='C_hat', linewidth=2)
@@ -175,6 +177,60 @@ def plot_results_contexts(Cs, c_hat, logp_c):
     fig.tight_layout()
     plt.show()
 
+
+
+def plot_contexts_rules_states_obs(y_stds, y_dvts, ys, Cs, rules, L_seq, N_seq):
+    
+    # Visualize tone frequencies
+    fig, ax1 = plt.subplots(figsize=(20, 6))
+    ax1.plot(y_stds, label='y_std', color='green', linestyle='dotted', linewidth=1, alpha=0.5)
+    ax1.plot(y_dvts, label='y_dvt', color='blue', linestyle='dotted', linewidth=1, alpha=0.5)
+    ax1.plot(ys, label='y', color='k', marker='o', markersize=2, linestyle='dashed', linewidth=1)
+    ax1.set_ylabel('y')
+
+    ax2 = ax1.twinx()
+    ax2.plot(Cs, 'o', color='black', label='context', markersize=2)
+    ax2.set_ylabel('context')
+    ax2.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax2.set_yticks(ticks=[0,1], labels=['std', 'dvt'])
+
+    rules_cmap = {0: 'tab:blue', 1: 'tab:red', 2: 'tab:orange'} 
+    for i, rule in enumerate(rules):
+        plt.axvspan(i*L_seq, i*L_seq + L_seq, facecolor=rules_cmap[rule], alpha=0.25)
+        
+    for i in range(N_seq):
+        plt.axvline(i*L_seq, color='tab:gray', linewidth=0.9)
+        ax2.text(x=i*L_seq+0.35*L_seq, y=0.95, s=f'rule {rules[i]}', color=rules_cmap[rules[i]])
+        ax2.text(x=i*L_seq+0.35*L_seq, y=0.85, s=f'dvt {dpos[i]}', color=rules_cmap[rules[i]])
+
+    fig.legend(bbox_to_anchor=(1.1, 1)) #, loc='upper left'bbox_to_anchor=(1.05, 1), frameon=False)
+    # fig.tight_layout(rect=[0, 0, 0.85, 1])
+    # fig.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_rules_dpos(rules, dpos):
+
+    # Visualize hierarchical information: dvt pos and rule
+
+    rules_cmap = {0: 'tab:blue', 1: 'tab:red', 2: 'tab:orange'} 
+
+    fig, ax = plt.subplots(figsize=(20, 6))
+    for i, y in enumerate(dpos):
+        ax.vlines(x=i, ymin=0, ymax=y, color='tab:gray', linewidth=0.9, zorder=1, alpha=0.5)   
+    ax.scatter(range(len(dpos)), dpos, c=[rules_cmap[rule] for rule in rules], zorder=2)
+    ax.set_ylabel('dvt pos')
+    ax.set_xlabel('trial')
+    ax.set_ylim(1, 8)
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_xticks(range(len(dpos)))
+    
+    handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=10) for color in rules_cmap.values()]
+    labels = rules_cmap.keys()
+    ax.legend(handles, labels, title='rule')
+    fig.tight_layout()
+    plt.show()
 
 
 
@@ -223,7 +279,7 @@ if __name__=="__main__":
         # Generate observations 
         Cs, ys, y_stds, y_dvts = generate_observations(T_max=T, y_std=y_std, y_dvt=y_dvt, mu_a = mu_a, si_a = si_a, si_d = si_d, sigma_freq_noise=sigma_freq_noise, sigma_sampling_noise=sigma_sampling_noise, C0=C0, C_trans=C_trans, contexts_set=contexts_set)
 
-        plot_variables(Cs, ys, y_stds, y_dvts)
+        plot_contexts_states_obs(Cs, ys, y_stds, y_dvts)
 
         # Infer with HMM as baseline
 
@@ -234,7 +290,7 @@ if __name__=="__main__":
         logp_c_coin = compute_logpc(np.array([Cs]), lamb)
         c_hat = np.argmax(lamb, axis=1)
         
-        plot_results_contexts(Cs, c_hat, logp_c_coin)   
+        plot_contexts_inference(Cs, c_hat, logp_c_coin)   
 
 
 
@@ -283,6 +339,12 @@ if __name__=="__main__":
             rules[n] = rule
             dpos[n] = dvt_pos
 
+            # Sample params for this sequence
+            a_std = _sample_TN_(0, 1, mu_a, si_a, 1).item()
+            d_std = _sample_N_(0, si_d, 1)
+            a_dvt = _sample_TN_(0, 1, mu_a, si_a, 1).item()
+            d_dvt = _sample_N_(0, si_d, 1)
+
             for t in range(L_seq):
                 # Get context for current position (dvt or std)
                 ctx = t==dvt_pos # 0 if not at dvt_pos, i.e. std
@@ -310,50 +372,10 @@ if __name__=="__main__":
 
 
         # Visualize tone frequencies
-        fig, ax1 = plt.subplots(figsize=(20, 6))
-        ax1.plot(y_stds, label='y_std', color='green', linestyle='dotted', linewidth=1, alpha=0.5)
-        ax1.plot(y_dvts, label='y_dvt', color='blue', linestyle='dotted', linewidth=1, alpha=0.5)
-        ax1.plot(ys, label='y', color='k', marker='o', markersize=2, linestyle='dashed', linewidth=1)
-        ax1.set_ylabel('y')
-
-        ax2 = ax1.twinx()
-        ax2.plot(Cs, 'o', color='black', label='context', markersize=2)
-        ax2.set_ylabel('context')
-        ax2.yaxis.set_major_locator(MaxNLocator(integer=True))
-        ax2.set_yticks(ticks=[0,1], labels=['std', 'dvt'])
-
-        rules_cmap = {0: 'tab:blue', 1: 'tab:red', 2: 'tab:orange'} 
-        for i, rule in enumerate(rules):
-            plt.axvspan(i*L_seq, i*L_seq + L_seq, facecolor=rules_cmap[rule], alpha=0.25)
-            
-        for i in range(N_seq):
-            plt.axvline(i*L_seq, color='tab:gray', linewidth=0.9)
-            ax2.text(x=i*L_seq+0.35*L_seq, y=0.95, s=f'rule {rules[i]}', color=rules_cmap[rules[i]])
-            ax2.text(x=i*L_seq+0.35*L_seq, y=0.85, s=f'dvt {dpos[i]}', color=rules_cmap[rules[i]])
-
-        fig.legend(bbox_to_anchor=(1.1, 1)) #, loc='upper left'bbox_to_anchor=(1.05, 1), frameon=False)
-        # fig.tight_layout(rect=[0, 0, 0.85, 1])
-        # fig.legend()
-        plt.tight_layout()
-        plt.show()
-
+        plot_contexts_rules_states_obs(y_stds, y_dvts, ys, Cs, rules, L_seq, N_seq)
 
         # Visualize hierarchical information: dvt pos and rule
-        fig, ax = plt.subplots(figsize=(20, 6))
-        for i, y in enumerate(dpos):
-            ax.vlines(x=i, ymin=0, ymax=y, color='tab:gray', linewidth=0.9, zorder=1, alpha=0.5)   
-        ax.scatter(range(len(dpos)), dpos, c=[rules_cmap[rule] for rule in rules], zorder=2)
-        ax.set_ylabel('dvt pos')
-        ax.set_xlabel('trial')
-        ax.set_ylim(1, 8)
-        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.set_xticks(range(len(dpos)))
-     
-        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=10) for color in rules_cmap.values()]
-        labels = rules_cmap.keys()
-        ax.legend(handles, labels, title='rule')
-        fig.tight_layout()
-        plt.show()
+        plot_rules_dpos(rules, dpos)
 
 
 

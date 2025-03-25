@@ -3,9 +3,6 @@ import time
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from goin import coin as coin
-from goin.opt_coin.test_opt_coin_inf import compute_logpc
 import scipy.stats as ss
 
 
@@ -383,29 +380,30 @@ class HierarchicalGenerativeModel():
 
             for c in np.unique(contexts): # np.unique(contexts)=range(2)
                 # Sample dynamics params for each context (std and dvt)
-                tau[c,b] = self._sample_TN_(1, 50, self.mu_tau[c], self.si_tau[c]) # A high boundary
-                lim[c,b] = self._sample_N_(mu_lim[c], self.si_lim[c])
+                tau[c,b] = self._sample_TN_(1, 50, self.mu_tau, self.si_tau).item() # A high boundary
+                lim[c,b] = self._sample_N_(mu_lim[c], self.si_lim).item() # TODO: check values
 
             pass
         # tau = self._sample_TN_(0, 1, self.mu_tau, self.si_tau, (np.max(contexts)+1, contexts.shape[0])) # TODO: check if okay to replace with len(np.unique(contexts))
         # lim = self._sample_N_(self.mu_lim, self.si_lim, (np.max(contexts)+1, contexts.shape[0]))
 
         states = dict([(c, np.zeros(contexts.shape)) for c in np.unique(contexts)])
-        for b in range(self.N_blocks):
-            for c in np.unique(contexts): # np.unique(contexts)=range(2)
 
-                # Initialize with a sample from distribution of mean and std the LGD stationary values
+        for c in np.unique(contexts): # np.unique(contexts)=range(2)
 
-                # states[c][:,0] = self._sample_N_(d[c]/(1-a[c]), self.si_q/((1-a[c]**2)**.5), (contexts.shape[0], 1))
-                states[c][b,0] = self._sample_N_(lim[c,b], self.si_q*tau[c,b]/((2*tau[c,b]-1)**.5), (contexts.shape[0], 1))
+            # Initialize with a sample from distribution of mean and std the LGD stationary values
 
-                w = self._sample_N_(0, self.si_q, contexts.shape)
-
+            # states[c][:,0] = self._sample_N_(d[c]/(1-a[c]), self.si_q/((1-a[c]**2)**.5), (contexts.shape[0], 1))
+            states[c][:,0] = self._sample_N_(lim[c,b], self.si_q*tau[c,b]/((2*tau[c,b]-1)**.5), (contexts.shape[0],))
+            # Sample noise
+            w = self._sample_N_(0, self.si_q, contexts.shape)
+            
+            for b in range(self.N_blocks):             
                 # Here the states exist independently of the contexts
+
                 for t in range(1, contexts.shape[1]):
-                
                     # states[c][:,t] = a[c] * states[c][:,t-1] + d[c] + w[:,t-1]
-                    states[c][b,t] = 1 / tau[c,b] * (lim[c,b] - states[c][b,t-1]) + w[b,t-1]   
+                    states[c][b,t] = states[c][b,t-1] + 1 / tau[c,b] * (lim[c,b] - states[c][b,t-1]) + w[b,t-1]   
 
 
         if return_pars:
@@ -433,12 +431,14 @@ class HierarchicalGenerativeModel():
             2-dimensional sequence of observations of size (N_blocks, N_tones)
         """
 
-        y = np.zeros(contexts.shape)
+        obs = np.zeros(contexts.shape)
         v = self._sample_N_(0, self.si_r, contexts.shape)
 
         for (s,t), c in np.ndenumerate(contexts):
             # Noisy observation of one of the two states (std or dvt), as imposed by the current context c
-            y[s,t] = states[c][s,t] + v[s,t]
+            obs[s,t] = states[c][s,t] + v[s,t]
+
+        return obs
 
         
     
@@ -468,7 +468,7 @@ class HierarchicalGenerativeModel():
         states      = dict([(key, states[key].flatten()) for key in states.keys()])
         obs         = obs.flatten()
 
-        return rules, timbres, states, obs
+        return rules, rules_long, dpos, timbres, contexts, states, obs 
     
 
 
@@ -480,7 +480,108 @@ class HierarchicalGenerativeModel():
             # Generate a batch of N_blocks sequences, sampling parameters and generating the paradigm's observations
             rules, timbres, states, obs = self.generate_run()
 
-    
+
+
+    def plot_contexts_states_obs(self, Cs, ys, y_stds, y_dvts, T):
+        """For a non-hierarchical situation (only contexts std/dvt, no rules)
+
+        Parameters
+        ----------
+        Cs : _type_
+            sequence of contexts
+        ys : _type_
+            observations
+        y_stds : _type_
+            states of std
+        y_dvts : _type_
+            states of dvt
+        """
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+        ax1.plot(y_stds, label='y_std', color='green', linestyle='dotted', linewidth=2)
+        ax1.plot(y_dvts, label='y_dvt', color='blue', linestyle='dotted', linewidth=2)
+        ax1.plot(ys, label='y', color='red', linestyle='dashed', linewidth=2)
+        ax1.set_ylabel('y')
+
+        ax2 = ax1.twinx()
+        ax2.plot(range(T), Cs, 'o', color='black', label='context')
+        ax2.set_ylabel('context')
+
+        fig.legend()
+
+        fig.tight_layout()
+        plt.show()
+
+
+    def plot_contexts_rules_states_obs(self, y_stds, y_dvts, ys, Cs, rules, dpos):
+        """For the hierachical evolution of rules and contexts (NOTE: timbres not included in this viz atm)
+
+        Parameters
+        ----------
+        y_stds : _type_
+            _description_
+        y_dvts : _type_
+            _description_
+        ys : _type_
+            _description_
+        Cs : _type_
+            _description_
+        rules : _type_
+            _description_
+        """
+        
+        # Visualize tone frequencies
+        fig, ax1 = plt.subplots(figsize=(20, 6))
+        ax1.plot(y_stds, label='y_std', color='green', marker='o', markersize=4, linestyle='dotted', linewidth=2, alpha=0.5)
+        ax1.plot(y_dvts, label='y_dvt', color='blue', marker='o', markersize=4, linestyle='dotted', linewidth=2, alpha=0.5)
+        ax1.plot(ys, label='y', color='k', marker='o', markersize=4, linestyle='dashed', linewidth=2)
+        ax1.set_ylabel('y')
+
+        ax2 = ax1.twinx()
+        ax2.plot(Cs, 'o', color='black', label='context', markersize=2)
+        ax2.set_ylabel('context')
+        ax2.yaxis.set_major_locator(MaxNLocator(integer=True))
+        ax2.set_yticks(ticks=[0,1], labels=['std', 'dvt'])
+
+        rules_cmap = {0: 'tab:blue', 1: 'tab:red', 2: 'tab:orange'} 
+        for i, rule in enumerate(rules):
+            plt.axvspan(i*self.N_tones, i*self.N_tones + self.N_tones, facecolor=rules_cmap[rule], alpha=0.25)
+            
+        for i in range(self.N_blocks):
+            plt.axvline(i*self.N_tones, color='tab:gray', linewidth=0.9)
+            ax2.text(x=i*self.N_tones+0.35*self.N_tones, y=0.95, s=f'rule {rules[i]}', color=rules_cmap[rules[i]])
+            ax2.text(x=i*self.N_tones+0.35*self.N_tones, y=0.85, s=f'dvt {dpos[i]}', color=rules_cmap[rules[i]])
+
+        fig.legend(bbox_to_anchor=(1.1, 1)) #, loc='upper left'bbox_to_anchor=(1.05, 1), frameon=False)
+        # fig.tight_layout(rect=[0, 0, 0.85, 1])
+        # fig.legend()
+        plt.tight_layout()
+        plt.show()
+
+
+    def plot_rules_dpos(self, rules, dpos):
+
+        # Visualize hierarchical information: dvt pos and rule
+
+        rules_cmap = {0: 'tab:blue', 1: 'tab:red', 2: 'tab:orange'} 
+
+        fig, ax = plt.subplots(figsize=(20, 6))
+        for i, y in enumerate(dpos):
+            ax.vlines(x=i, ymin=0, ymax=y, color='tab:gray', linewidth=0.9, zorder=1, alpha=0.5)   
+        ax.scatter(range(len(dpos)), dpos, c=[rules_cmap[rule] for rule in rules], zorder=2)
+        ax.set_ylabel('dvt pos')
+        ax.set_xlabel('trial')
+        ax.set_ylim(1, 8)
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.set_xticks(range(len(dpos)))
+        
+        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=color, markersize=10) for color in rules_cmap.values()]
+        labels = rules_cmap.keys()
+        ax.legend(handles, labels, title='rule')
+        fig.tight_layout()
+        plt.show()
+
+
 
 
 if __name__ == '__main__':
@@ -494,7 +595,7 @@ if __name__ == '__main__':
         "tones_values": [1455, 1500, 1600],
         "mu_tau": 4,
         "si_tau": 1,
-        "si_lim": 10,
+        "si_lim": 5,
         "mu_rho_rules": 0.9,
         "si_rho_rules": 0.05,
         "mu_rho_timbres": 0.8,
@@ -505,7 +606,11 @@ if __name__ == '__main__':
     
     gm = HierarchicalGenerativeModel(config)
 
-    rules, timbres, states, obs = gm.generate_run()
+    rules, rules_long, dpos, timbres, contexts, states, obs = gm.generate_run()
+
+    gm.plot_contexts_rules_states_obs(states[0][0:gm.N_tones], states[1], obs, contexts, rules, dpos)
+    gm.plot_contexts_states_obs(contexts[0:gm.N_tones], obs[0:gm.N_tones], states[0][0:gm.N_tones], states[1][0:gm.N_tones], gm.N_tones)
+    gm.plot_rules_dpos(rules, dpos)
 
     pass
     
