@@ -97,7 +97,7 @@ def sample_timbre(timbre, timbre_set, timbre_rule_assoc):
 
 
 
-def generate_observations(a_std = 1, d_std = 5, a_dvt = 1, d_dvt = 5, sigma_freq_noise = 5, T_max = 512, y_std = 1550, y_dvt = 1500, sigma_sampling_noise = 5, C0 = 0, C_trans = np.array([[0.9, 0.1], [0.9, 0.1]]), contexts_set=[0,1]):
+def generate_observations(mu_a = 0.85, si_a = 0.05, si_d = 5, sigma_freq_noise = 5, T_max = 512, y_std = 1550, y_dvt = 1500, sigma_sampling_noise = 5, C0 = 0, C_trans = np.array([[0.9, 0.1], [0.9, 0.1]]), contexts_set=[0,1]):
 
     # Std and dvt distributions dynamics param
     # time
@@ -116,7 +116,12 @@ def generate_observations(a_std = 1, d_std = 5, a_dvt = 1, d_dvt = 5, sigma_freq
 
     # Observations sequence
     ys = np.zeros(T_max)
-    ys[0] = sample_obs(y_stds[0], y_dvts[0], Cs[0], sigma_sampling_noise) 
+    ys[0] = sample_obs(y_stds[0], y_dvts[0], Cs[0], sigma_sampling_noise)
+
+    a_std = _sample_TN_(0, 1, mu_a, si_a, 1).item()
+    d_std = _sample_N_(0, si_d, 1)
+    a_dvt = _sample_TN_(0, 1, mu_a, si_a, 1).item()
+    d_dvt = _sample_N_(0, si_d, 1)
 
 
     for t in range(T_max):
@@ -183,16 +188,12 @@ if __name__=="__main__":
     si_r = 2
 
 
-
-    a = _sample_TN_(a=0, b=1, mu=mu_a, si=si_a, N=1)
-    d = _sample_N_(0, si_d, 1)
     # w = self._sample_N_(0, self.si_q, len(contexts)-i0-1) # states
     # v = self._sample_N_(0, self.si_r, len(contexts)) # observations
     
-    a_std = a
-    d_std = d
-    a_dvt = a
-    d_dvt = d
+    mu_a = 0.85
+    si_a = 0.05
+    si_d = 5
     sigma_freq_noise = si_q
     sigma_sampling_noise = si_r
     y_values = [1455, 1500, 1600] # Possible freq stationary values
@@ -220,7 +221,7 @@ if __name__=="__main__":
         y_std, y_dvt = sample_uniform_pair(y_values)
 
         # Generate observations 
-        Cs, ys, y_stds, y_dvts = generate_observations(T_max=T, y_std=y_std, y_dvt=y_dvt, a_std=a_std, d_std=d_std, a_dvt=a_dvt, d_dvt=d_dvt, sigma_freq_noise=sigma_freq_noise, sigma_sampling_noise=sigma_sampling_noise, C0=C0, C_trans=C_trans, contexts_set=contexts_set)
+        Cs, ys, y_stds, y_dvts = generate_observations(T_max=T, y_std=y_std, y_dvt=y_dvt, mu_a = mu_a, si_a = si_a, si_d = si_d, sigma_freq_noise=sigma_freq_noise, sigma_sampling_noise=sigma_sampling_noise, C0=C0, C_trans=C_trans, contexts_set=contexts_set)
 
         plot_variables(Cs, ys, y_stds, y_dvts)
 

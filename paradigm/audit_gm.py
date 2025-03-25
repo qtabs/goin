@@ -36,6 +36,8 @@ class HierarchicalGenerativeModel():
         self.si_lim = params["si_lim"]
         self.mu_rho_rules = params["mu_rho_rules"]
         self.si_rho_rules = params["si_rho_rules"]
+        self.mu_rho_timbres = params["mu_rho_timbres"]
+        self.si_rho_timbres = params["si_rho_timbres"]        
         self.si_q = params["si_q"]
         self.si_r = params["si_r"]
 
@@ -43,7 +45,7 @@ class HierarchicalGenerativeModel():
         pass
 
     # Auxiliary samplers from goin.coin.GenerativeModel
-    def _sample_N_(mu, si, size=1):
+    def _sample_N_(self, mu, si, size=1):
         """Samples from a normal distribution
 
         Parameters
@@ -63,7 +65,7 @@ class HierarchicalGenerativeModel():
 
         return np.array(ss.norm.rvs(mu, si, size))
 
-    def _sample_TN_(a, b, mu, si, size):
+    def _sample_TN_(self, a, b, mu, si, size=1):
         """Samples from a truncated normal distribution
 
         Parameters
@@ -88,13 +90,13 @@ class HierarchicalGenerativeModel():
         return np.array(ss.truncnorm.rvs((a-mu)/si, (b-mu)/si, mu, si, size))
     
 
-    def sample_pair(tones): 
+    def sample_pair(self, tones): 
         pair = np.random.choice(tones, size=(2,), replace=False)     
         # y_std = pair[0]
         # y_dvt = pair[1]
         return pair
 
-    def sample_next_markov_state(current_state, states_values, states_trans_matrix):
+    def sample_next_markov_state(self, current_state, states_values, states_trans_matrix):
         return np.random.choice(states_values, p=states_trans_matrix[current_state])
     
 
@@ -115,11 +117,13 @@ class HierarchicalGenerativeModel():
         """
 
         # Sample parameters
-        rho = self._sample_TN_(0, 1, mu_rho, si_rho)
-        eps = [np.random.uniform() for r in N]
+        rho = self._sample_TN_(0, 1, mu_rho, si_rho).item()
+        eps = [np.random.uniform() for n in range(N)]
+        
 
         # Get matrix
-        pi = rho * np.eye(N) + (1-rho) * np.array([[[0 if i == j else eps_/len(eps) for j in range(len(eps))] for i, eps_ in enumerate(eps)]])
+        delta = np.array([[0 if i == j else eps[i] if j == (i+1)%N else 1 - eps[i] for j in range(N)] for i in range(N)])
+        pi = rho * np.eye(N) + (1-rho) * delta
         return pi
     
     
@@ -149,7 +153,7 @@ class HierarchicalGenerativeModel():
         # pi_rules_0   = np.array([[0.9, 0.05, 0.05], [0.05, 0.9, 0.05], [0.05, 0.05, 0.9]]) # A very sticky transition matrix
 
         # Rules sequence
-        rules = np.nan * np.ones(N_blocks)
+        rules = np.zeros(N_blocks, dtype=np.int64)
 
         # Initilize rule (assign to 0, randomly, or from the distribution from which the transition probas also come from)
         rules[0] = 0
@@ -186,7 +190,7 @@ class HierarchicalGenerativeModel():
         # Sample timbres transition (emission from rule) matrix
         pi_timbre = self.sample_pi(N_timbres, mu_rho_timbres, si_rho_timbres)
 
-        timbres = [np.random.choice(range(N_timbres), pi_timbre[seq]) for seq in rules_seq]
+        timbres = np.array([np.random.choice(range(N_timbres), p=pi_timbre[seq]) for seq in rules_seq])
         
         return timbres
 
@@ -335,7 +339,7 @@ class HierarchicalGenerativeModel():
 
     
     def get_contexts(self, dpos, N_blocks, N_tones):
-        contexts = np.zeros(N_blocks, N_tones)
+        contexts = np.zeros((N_blocks, N_tones), dtype=np.int64)
         for i, pos in enumerate(dpos):
             contexts[i, pos] = 1
         return contexts
@@ -367,7 +371,7 @@ class HierarchicalGenerativeModel():
         """
 
         # # Note that retention and drift are sampled in every call
-        # a = self._sample_TN_(0, 1, self.mu_a, self.si_a, (np.max(contexts)+1, contexts.shape[0])) # TODO: check if okay to replace with len(set(contexts))
+        # a = self._sample_TN_(0, 1, self.mu_a, self.si_a, (np.max(contexts)+1, contexts.shape[0])) # TODO: check if okay to replace with len(np.unique(contexts))
         # d = self._sample_N_(0, self.si_d, (np.max(contexts)+1, contexts.shape[0]))
 
 
@@ -377,18 +381,18 @@ class HierarchicalGenerativeModel():
             # Sample one pair of std/dvt lim values for each block
             mu_lim = self.sample_pair(self.tones_values)
 
-            for c in set(contexts): # set(contexts)=range(2)
+            for c in np.unique(contexts): # np.unique(contexts)=range(2)
                 # Sample dynamics params for each context (std and dvt)
                 tau[c,b] = self._sample_TN_(1, 50, self.mu_tau[c], self.si_tau[c]) # A high boundary
                 lim[c,b] = self._sample_N_(mu_lim[c], self.si_lim[c])
 
             pass
-        # tau = self._sample_TN_(0, 1, self.mu_tau, self.si_tau, (np.max(contexts)+1, contexts.shape[0])) # TODO: check if okay to replace with len(set(contexts))
+        # tau = self._sample_TN_(0, 1, self.mu_tau, self.si_tau, (np.max(contexts)+1, contexts.shape[0])) # TODO: check if okay to replace with len(np.unique(contexts))
         # lim = self._sample_N_(self.mu_lim, self.si_lim, (np.max(contexts)+1, contexts.shape[0]))
 
-        states = dict([(c, np.zeros(contexts.shape)) for c in set(contexts)])
+        states = dict([(c, np.zeros(contexts.shape)) for c in np.unique(contexts)])
         for b in range(self.N_blocks):
-            for c in set(contexts): # set(contexts)=range(2)
+            for c in np.unique(contexts): # np.unique(contexts)=range(2)
 
                 # Initialize with a sample from distribution of mean and std the LGD stationary values
 
@@ -442,7 +446,7 @@ class HierarchicalGenerativeModel():
 
         # Sample rules
         rules = self.sample_rules(self.N_blocks, self.N_rules, self.mu_rho_rules, self.si_rho_rules)
-        rules_long = np.array(rules) * np.ones((self.N_blocks, self.N_tones)) # Store latent rules in a per-tone array # This is equivalent to matlab's repmat
+        rules_long = np.tile(rules[:,np.newaxis], (1,self.N_tones)) # Store latent rules in a per-tone array # This is equivalent to matlab's repmat
 
         # Sample timbres (here we consider that there are as many different timbres as there are different rules -- self.N_rules)
         timbres = self.sample_timbres(rules, self.N_rules, self.mu_rho_timbres, self.si_rho_timbres)
@@ -451,7 +455,7 @@ class HierarchicalGenerativeModel():
         dpos = self.sample_dpos(rules, self.rules_dpos_set)
 
         # Get contexts
-        contexts = self.get_contexts(self, dpos, self.N_blocks, self.N_tones)
+        contexts = self.get_contexts(dpos, self.N_blocks, self.N_tones)
 
         # Sample states and observations
         states  = self.sample_states(contexts)
