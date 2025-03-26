@@ -118,8 +118,10 @@ class HierarchicalGenerativeModel():
         eps = [np.random.uniform() for n in range(N)]
         
 
-        # Get matrix
-        delta = np.array([[0 if i == j else eps[i] if j == (i+1)%N else 1 - eps[i] for j in range(N)] for i in range(N)])
+        # Delta has a zero diagonal and the rest of the elements of a row (for a rule) are partitions from 1 using the corresponding eps[row] (parameter for that rule), controlling for the sum to be 1
+        delta = np.array([[0 if i == j else eps[i]*(1-eps[i])**j if (j<i and j<N-2) else eps[i]*(1-eps[i])**(j-1) if i<j<N-1 else 1 - sum([eps[i]*(1-eps[i])**k for k in range(N-2)]) for j in range(N)] for i in range(N)])
+        
+        # Transition matrix
         pi = rho * np.eye(N) + (1-rho) * delta
         return pi
     
@@ -383,7 +385,6 @@ class HierarchicalGenerativeModel():
                 tau[c,b] = self._sample_TN_(1, 50, self.mu_tau, self.si_tau).item() # A high boundary
                 lim[c,b] = self._sample_N_(mu_lim[c], self.si_lim).item() # TODO: check values
 
-            pass
         # tau = self._sample_TN_(0, 1, self.mu_tau, self.si_tau, (np.max(contexts)+1, contexts.shape[0])) # TODO: check if okay to replace with len(np.unique(contexts))
         # lim = self._sample_N_(self.mu_lim, self.si_lim, (np.max(contexts)+1, contexts.shape[0]))
 
@@ -392,13 +393,15 @@ class HierarchicalGenerativeModel():
         for c in np.unique(contexts): # np.unique(contexts)=range(2)
 
             # Initialize with a sample from distribution of mean and std the LGD stationary values
-
             # states[c][:,0] = self._sample_N_(d[c]/(1-a[c]), self.si_q/((1-a[c]**2)**.5), (contexts.shape[0], 1))
-            states[c][:,0] = self._sample_N_(lim[c,b], self.si_q*tau[c,b]/((2*tau[c,b]-1)**.5), (contexts.shape[0],))
-            # Sample noise
-            w = self._sample_N_(0, self.si_q, contexts.shape)
+            states[c][:,0] = self._sample_N_(lim[c,:], self.si_q*tau[c,:]/((2*tau[c,:]-1)**.5), (contexts.shape[0],))
+
+            for b in range(self.N_blocks): 
+
+                # Sample noise
+                w = self._sample_N_(0, self.si_q, contexts.shape)
             
-            for b in range(self.N_blocks):             
+            
                 # Here the states exist independently of the contexts
 
                 for t in range(1, contexts.shape[1]):
@@ -506,6 +509,8 @@ class HierarchicalGenerativeModel():
         ax2 = ax1.twinx()
         ax2.plot(range(T), Cs, 'o', color='black', label='context')
         ax2.set_ylabel('context')
+        ax2.set_yticks(ticks=[0,1], labels=['std', 'dvt'])
+
 
         fig.legend()
 
@@ -609,8 +614,8 @@ if __name__ == '__main__':
     rules, rules_long, dpos, timbres, contexts, states, obs = gm.generate_run()
 
     gm.plot_contexts_rules_states_obs(states[0][0:gm.N_tones], states[1], obs, contexts, rules, dpos)
-    gm.plot_contexts_states_obs(contexts[0:gm.N_tones], obs[0:gm.N_tones], states[0][0:gm.N_tones], states[1][0:gm.N_tones], gm.N_tones)
     gm.plot_rules_dpos(rules, dpos)
+    gm.plot_contexts_states_obs(contexts[0:gm.N_tones], obs[0:gm.N_tones], states[0][0:gm.N_tones], states[1][0:gm.N_tones], gm.N_tones)
 
     pass
     

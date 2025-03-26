@@ -3,9 +3,9 @@ import time
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-from goin import coin as coin
-from goin.opt_coin.test_opt_coin_inf import compute_logpc
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+# from goin import coin as coin
+# from goin.opt_coin.test_opt_coin_inf import compute_logpc
 import scipy.stats as ss
 
 
@@ -154,6 +154,8 @@ def plot_contexts_states_obs(Cs, ys, y_stds, y_dvts):
     ax2 = ax1.twinx()
     ax2.plot(range(T), Cs, 'o', color='black', label='context')
     ax2.set_ylabel('context')
+    ax2.set_yticks(ticks=[0,1], labels=['std', 'dvt'])
+
 
     fig.legend()
 
@@ -283,14 +285,14 @@ if __name__=="__main__":
 
         # Infer with HMM as baseline
 
-        # Infer with COIN
-        pars = coin.load_pars('validation') # Tune specific parameters later
-        gm = coin.UrnGenerativeModel({'pars': pars, 'name': 'audit_test'})            
-        z_coin, logp_coin, _, lamb = gm.estimate_coin(np.array([ys]), mode='python', nruns=1, max_cores=1)
-        logp_c_coin = compute_logpc(np.array([Cs]), lamb)
-        c_hat = np.argmax(lamb, axis=1)
+        # # Infer with COIN
+        # pars = coin.load_pars('validation') # Tune specific parameters later
+        # gm = coin.UrnGenerativeModel({'pars': pars, 'name': 'audit_test'})            
+        # z_coin, logp_coin, _, lamb = gm.estimate_coin(np.array([ys]), mode='python', nruns=1, max_cores=1)
+        # logp_c_coin = compute_logpc(np.array([Cs]), lamb)
+        # c_hat = np.argmax(lamb, axis=1)
         
-        plot_contexts_inference(Cs, c_hat, logp_c_coin)   
+        # plot_contexts_inference(Cs, c_hat, logp_c_coin)   
 
 
 
