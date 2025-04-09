@@ -7,13 +7,13 @@ function [mu_, logp_, cump_, lamb_, a_, d_] = runCOIN(y, parlist, parvals, nruns
     end
 
 	for b = progress(1:size(y, 1))
-		[mu_(b, :), logp_(b, :), cump_(b, :), lamb_(b, :, :), a_(b, :, :), d_(b, :, :)] = call_coin(y(b, :), parlist, parvals, nruns, n_ctx, max_cores);
+		[mu_(b, :), logp_(b, :), cump_(b, :), lamb_(b, :, :), a_(b, :, :), d_(b, :, :)] = call_coin(y(b, :), parlist, parvals, nruns, n_ctx, max_cores, b);
     end
 
 end
 
 
-function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_ctx, max_cores)
+function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_ctx, max_cores, id)
     % Returns mu with dim (len(y), 1)
 
 	if nargin == 1
@@ -32,8 +32,11 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_
 	% obj.max_cores = nruns;
 	obj.perturbations = y;
 
-	
 	out  = obj.simulate_COIN;
+
+    export_properties(obj, "coin", id);
+    export_properties(out, "out", id);
+
 	mu   = zeros(length(y), nruns);
 	cump = [];
     % Original
@@ -44,7 +47,7 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_
 	a    = zeros(obj.max_contexts + 1, length(y), nruns);
 	d    = zeros(obj.max_contexts + 1, length(y), nruns);
 
-	for i = 1:nruns        
+    for i = 1:nruns        
  
 		mu_parts     = out.runs{i}.state_mean;
         
@@ -58,8 +61,8 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_
 		mu(:, i)      = reshape(mean(sum(lambda_parts .* mu_parts, 1), 2), [1, length(y)]); 
         % Original
 		% logp(i)       = mean(log(max(mean(p_y_parts, 2), eps))); % check // First, average over particles, then multiply (i.e., log-sum) over trials
-        % 1st suggestion: don't average but sum over time points (n_trials)
-		logp(i)       = sum(log(max(mean(p_y_parts, 2), eps))); % check // First, average over particles, then multiply (i.e., log-sum) over trials
+        % 1st suggestion: dont average but sum over time points (n_trials)
+		% logp(i)       = sum(log(max(mean(p_y_parts, 2), eps))); % check // First, average over particles, then multiply (i.e., log-sum) over trials
         % 2nd suggestion: keep logp value for each time point
 		logp(:, i)    = log(max(mean(p_y_parts, 2), eps)); % check // First, average over particles, then multiply (i.e., log-sum) over trials
 		lamb(:, :, i) = reshape(mean(lambda_parts, 2), [size(lambda_parts, 1), length(y)]);
@@ -70,7 +73,10 @@ function [mu, logp, cump, lamb, a, d] = call_coin(y, parlist, parvals, nruns, n_
     end
 
 	mu   = mean(mu, 2);
-	logp = max(logp) + log(sum(exp(logp - max(logp)))) - log(nruns);
+    % Originally: gives one single summarizing value
+% 	logp = max(logp) + log(sum(exp(logp - max(logp)))) - log(nruns);
+    % To obtain (1, 1, n_trials) like for mu:
+    logp = max(logp, [], 2) + log(sum(exp(logp - max(logp, [], 2)), 2)) - log(nruns);
 	lamb = mean(lamb, 3);
 	a = mean(a, 3);
 	d = mean(d, 3);
@@ -92,8 +98,8 @@ function obj = instantiate_coin(parlist, parvals)
 	end
 
 	obj.store = {'predicted_probabilities', 'state_var', 'state_mean', 'drift', 'retention', 'average_state'};
-	obj.runs = 1;
- 	obj.max_cores = 0;
+% 	obj.runs = 1; % We can set that later or explicitly rather!
+%  	obj.max_cores = 0;
  	% obj.add_observation_noise = false;
 	% obj.verbose = false;
 	obj.particles = 100;
@@ -105,3 +111,19 @@ function obj = instantiate_coin(parlist, parvals)
 
 end
 
+
+function export_properties(obj, name, id)
+    % Extracting the properties of the COIN object
+%     coin_properties = properties(obj);
+    
+    % Displaying all property values in the terminal
+%     for i = 1:length(coin_properties)
+%         property_name = coin_properties{i};
+%         property_value = obj.(property_name);
+%         disp([property_name ':']);
+%         disp(property_value);
+%     end
+    
+    save("goin/opt_coin/" + name + "_" + id + "_matlab.mat", 'obj');
+
+end
