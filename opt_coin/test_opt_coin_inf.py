@@ -186,13 +186,13 @@ def main():
     
     # Generative model sample draws
     # n_samples, n_trials = 512, 512 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
-    n_samples, n_trials = 10, 5 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
+    n_samples, n_trials = 1, 5 # n_samples: samples from generative model; n_trials: timepoints (512, 512 or more)
 
     # Inference runs    
     nruns = 1
     
     # 'matlab': matlab and python, 'python': only Python
-    mode = 'python'
+    mode = 'matlab'
     
     # Define number of cores used
     max_cores = None
