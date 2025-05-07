@@ -121,6 +121,7 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
     # should fit best tau before calling estimate_leaky_average:
     gm.fit_best_tau(n_trials, 10 * n_samples)
     z_LI, logp_LI, _ = gm.estimate_leaky_average_parallel(Y)
+    mse_LI = ((z_LI - Y)**2).mean(1)
     logp_c_LI = compute_logpc(C, lamb=None, e_beta=e_beta)
     t_LI = (time.time() - t0) / 60
 
@@ -129,6 +130,7 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
         t0 = time.time()
         z_coin_M, logp_coin_M, _, lamb_M = gm.estimate_coin(Y, mode='matlab', eng=eng, nruns=nruns,
                                                             n_ctx=max(n_ctx, 10), max_cores=max_cores)
+        mse_coin_M = ((z_coin_M - Y)**2).mean(1)
         logp_c_coin_M = compute_logpc(C, lamb_M)
         t_M = (time.time() - t0) / 60
 
@@ -136,6 +138,7 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
     t0 = time.time()
     z_coin, logp_coin, _, lamb = gm.estimate_coin(Y, mode='python', nruns=nruns, n_ctx=max(n_ctx, 10),
                                                   max_cores=max_cores)
+    mse_coin = ((z_coin - Y)**2).mean(1)
     logp_c_coin = compute_logpc(C, lamb)
     t = (time.time() - t0) / 60
 
@@ -148,17 +151,20 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
                    'Python': {'time': t,
                               'logp_y_avg': logp_coin.mean(1),
                               'logp_y_sum': logp_coin.sum(1),
+                              'mse_y_avg': mse_coin,
                               'logp_c_avg': logp_c_coin.mean(1),
                               'logp_c_sum': logp_c_coin.sum(1)},
                    'Leaky': {'time': t_LI,
                              'logp_y_avg': logp_LI.mean(1),
                              'logp_y_sum': logp_LI.sum(1),
+                             'mse_y_avg': mse_LI,
                              'logp_c_avg': logp_c_LI.mean(1),
                              'logp_c_sum': logp_c_LI.sum(1)}}
     if mode == 'matlab':
         data_config['Matlab'] = {'time': t_M,
                                  'logp_y_avg': logp_coin_M.mean(1),
                                  'logp_y_sum': logp_coin_M.sum(1),
+                                 'mse_y_avg': mse_coin_M,
                                  'logp_c_avg': logp_c_coin_M.mean(1),
                                  'logp_c_sum': logp_c_coin_M.sum(1)}
 
