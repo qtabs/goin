@@ -321,7 +321,7 @@ class GenerativeModel():
         return(y, q, c)
 
     def sample_observations(self, contexts, states):
-        """Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
+        """Generates a single data sequence y_t given a sequence of contexts c_t and a sequence of 
         states x_t^c
 
         Parameters
@@ -413,7 +413,7 @@ class GenerativeModel():
         return list(ordered_contexts)
 
     # Coin estimation
-    def estimate_coin(self, y, mode="matlab", eng=None, nruns=10, n_ctx=10, max_cores=1):
+    def estimate_coin(self, y, mode="matlab", eng=None, nruns=1, n_ctx=10, max_cores=1):
         """Runs the COIN inference algorithm on a batch of observations
         Requires MATLAB and the COIN inference implementation (https://github.com/jamesheald/COIN)
         OR the Python version
@@ -429,7 +429,7 @@ class GenerativeModel():
         z_coin : np.array
             predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y (n_samples, n_trials)
         logp   : np.array
-            log-probabilities of the input sequence y_t under the COIN posterior distribution; shape = (n_samples, 1)
+            log-probabilities of the input sequence y_t under the COIN posterior distribution; shape = (n_samples, nruns)
         cump   : np.array
             cumulative probabilities of the input sequence y_t under the COIN posterior 
             distribution; same dimensional arrangement as y. Useful to measure calibration.
@@ -469,7 +469,7 @@ class GenerativeModel():
             if max_cores==None:
                 # max_cores==None in Python defaults to the maximum number of cores available, but in Matlab it needs to be assessed and passed explicitely
                 max_cores = int(eng.feature('numCores')) # returns max number of physical cores (Matlab does not allow hyperthreading)
-            Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), matlab.int64(n_ctx), matlab.int64(max_cores), nargout=6)
+            Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), n_ctx, max_cores, nargout=6)
             z_coin, logp, cump, lamb = np.array(Z[0]), np.array(Z[1]), np.array(Z[2]), np.array(Z[3])
         else: # 'python':
             z_coin, logp, cump, lamb, _, _ = runCOIN(y, parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
