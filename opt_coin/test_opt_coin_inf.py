@@ -64,7 +64,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
     # Select model variant
     genmodel_func = coin.UrnGenerativeModel
 
-    if max_cores_configs is None or max_cores_configs >=1:
+    if max_cores_configs is None or max_cores_configs >1:
         # Create all config combinations
         n_par_vals = tuple(len(config_values[p]) for p in config_values.keys())
         configs = [(i, config) for i, config in enumerate(
@@ -222,7 +222,7 @@ def main():
     max_cores = None # But doesn't have impact
 
     # Define number of cores used across multiple configs
-    max_cores_configs = None
+    max_cores_configs = 1
 
     # Results path
     if not os.path.exists(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")):
