@@ -32,15 +32,21 @@ def load_and_compare(filename):
     
 
 
-def compute_logpc(C, lamb=None, e_beta=None):
-    """Get the log of the probability of true context (C) in contexts probabilities distribution (lamb)"""
+def compute_logpc(C, lamb=None, e_beta=None, n_lim=100):
+    """Get the log of the probability of true context (C) in the empirical expected contexts 
+    probabilities distribution (e_beta) if provided or from the particle approximation 
+    probabilities (lamb) if provided instead.
+    The probabilities are minimally clipped to the probability of appearing once in the total 
+    set of samples in a simulation (either from the particles approx. like in COIN, or the simulation
+    that allowed for the calculation of the empirical expected global context dist)
+    """
 
     n_samples, n_trials = C.shape[0], C.shape[1]
 
     if lamb is not None:
-        logp_c = np.array([[np.log(lamb[b,C[b,t],t]) for t in range(n_trials)] for b in range(n_samples)])
+        logp_c = np.array([[np.maximum(np.log(lamb[b,C[b,t],t]), np.log(1/n_lim)) for t in range(n_trials)] for b in range(n_samples)])
     elif e_beta is not None: 
-        logp_c = np.array([[np.log(e_beta[C[b,t]]) for t in range(n_trials)] for b in range(n_samples)])
+        logp_c = np.array([[np.maximum(np.log(e_beta[C[b,t]]), np.log(1/n_lim)) for t in range(n_trials)] for b in range(n_samples)])
     return logp_c
 
      
@@ -113,33 +119,37 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
     n_ctx = len(np.unique(C))
 
     # Evaluate empirical beta
-    e_beta = gm.empirical_expected_beta(n_samples=n_samples, n_trials=n_trials, n_contexts=max(n_ctx, 10))
+    n_sim = 100
+    e_beta = gm.empirical_expected_beta(n_samples=n_sim*n_samples, n_trials=n_trials, n_contexts=max(n_ctx, 10))
 
-    # Leaky integrator inference
+    ###### Leaky integrator inference
     t0 = time.time()
 
     # should fit best tau before calling estimate_leaky_average:
     gm.fit_best_tau(n_trials, 10 * n_samples)
     z_LI, logp_LI, _ = gm.estimate_leaky_average_parallel(Y)
     mse_LI = ((z_LI - Y)**2).mean(1)
-    logp_c_LI = compute_logpc(C, lamb=None, e_beta=e_beta)
+    logp_c_LI = compute_logpc(C, lamb=None, e_beta=e_beta, n_lim=n_sim*n_samples)
     t_LI = (time.time() - t0) / 60
 
-    # COIN inference, in Matlab and Python respectively
+    ###### COIN inference, in Matlab and Python respectively
+    n_particles = 100 # As set for inference object in goin/coin.py
+
+    ### Matlab
     if mode == 'matlab':
         t0 = time.time()
         z_coin_M, logp_coin_M, _, lamb_M = gm.estimate_coin(Y, mode='matlab', eng=eng, nruns=nruns,
                                                             n_ctx=max(n_ctx, 10), max_cores=max_cores)
         mse_coin_M = ((z_coin_M - Y)**2).mean(1)
-        logp_c_coin_M = compute_logpc(C, lamb_M)
+        logp_c_coin_M = compute_logpc(C, lamb=lamb_M, e_beta=None, n_lim=n_particles*n_samples)
         t_M = (time.time() - t0) / 60
 
-    # Python
+    ### Python
     t0 = time.time()
     z_coin, logp_coin, _, lamb = gm.estimate_coin(Y, mode='python', nruns=nruns, n_ctx=max(n_ctx, 10),
                                                   max_cores=max_cores)
     mse_coin = ((z_coin - Y)**2).mean(1)
-    logp_c_coin = compute_logpc(C, lamb)
+    logp_c_coin = compute_logpc(C, lamb=lamb, e_beta=None, n_lim=n_particles*n_samples)
     t = (time.time() - t0) / 60
 
     # Store
@@ -201,9 +211,9 @@ def main():
     # p(y=y_t|y_1:t-1)
     
     # Set configuration params: define possible parameter values
-    config_values =  {'rho_t':   np.array([0.10, 0.50, 0.90]),	
-					'alpha_t': np.array([0.1, 1.0, 10.0]),
-					'gamma_t':    np.array([0.1, 1.0, 10.0])}
+    config_values =  {'rho_t':   np.array([0.10, 0.25, 0.50, 0.75, 0.90, 0.99]),	
+					'alpha_t': np.array([0.1, 0.2, 0.5, 1.0, 2, 5, 10.0]),
+					'gamma_t':    np.array([0.1, 0.2, 0.5, 1.0, 2, 5, 10.0])}
     # config_values =  {'rho_t':   np.array([0.10, 0.90]),	
 	# 				'alpha_t': np.array([0.1, 10.0]),
 	# 				'gamma_t':    np.array([0.1, 10.0])}
