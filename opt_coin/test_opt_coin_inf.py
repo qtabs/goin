@@ -9,8 +9,9 @@ from goin import coin as coin
 import pickle
 
 from tqdm import tqdm
+import functools
 import multiprocessing
-
+from pathos.multiprocessing import ProcessingPool
 import warnings
 import argparse
 
@@ -29,7 +30,10 @@ def load_and_compare(filename):
     # Aggregate data
     for config_k in data.keys():
         pass
-    
+
+def multi_run_wrapper(args):
+    return run_single_config(*args)
+
 
 
 def compute_logpc(C, lamb=None, e_beta=None, n_lim=100):
@@ -49,7 +53,9 @@ def compute_logpc(C, lamb=None, e_beta=None, n_lim=100):
         logp_c = np.array([[np.maximum(np.log(e_beta[C[b,t]]), np.log(1/n_lim)) for t in range(n_trials)] for b in range(n_samples)])
     return logp_c
 
-     
+
+def run_single_config_wrapper(args):
+    return run_single_config(*args)
 
 def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mode='matlab', max_cores=1, max_cores_configs=1):
     
@@ -70,30 +76,30 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
     # Select model variant
     genmodel_func = coin.UrnGenerativeModel
 
-    if max_cores_configs is None or max_cores_configs >1:
-        # Create all config combinations
-        n_par_vals = tuple(len(config_values[p]) for p in config_values.keys())
-        configs = [(i, config) for i, config in enumerate(
-            [(n0, n1, n2) for n0 in range(n_par_vals[0]) for n1 in range(n_par_vals[1]) for n2 in range(n_par_vals[2])]
-        )]
-
+    if max_cores_configs is None or max_cores_configs > 1:
         # Prepare input for each config
         inputs = [
-            (k, config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials, nruns)
-            for k, config in configs
+            (config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials, nruns)
+            for config in configs
         ]
 
-        with multiprocessing.Pool(processes=max_cores) as pool:
-            # tqdm needs manual handling with Pool
-            for k, data_config in tqdm(pool.starmap(run_single_config, inputs), total=len(inputs)):
-                data[k] = data_config
+        # 1: pathos.multiprocessing 
+        pool = ProcessingPool(nodes=max_cores_configs)
+        res = pool.map(run_single_config_wrapper, inputs)
+        
+        # 2: multiprocessing: works but not with coin's pathos multiprocessing too
+        # parallel_function = functools.partial(run_single_config)
+        # with multiprocessing.Pool(processes=max_cores_configs) as pool:
+        #     res = pool.starmap(parallel_function, inputs)
+        
+        for k, data_k in enumerate(res):
+            data[k] = data_k
 
     else:
         for k, config in tqdm(enumerate(configs)):
 
-            data_config = run_single_config(config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials,
-                              nruns)
-            data[k] = data_config
+            data_k = run_single_config(config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials, nruns)
+            data[k] = data_k
 
     # Save the dictionary as a pickle file
     # Save distributions of samples' logp values (avged over timepoints, as done above) for each config
@@ -107,6 +113,8 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
     parsetname = '_'.join([f'{p}-{1000 * new_pars[p]:03.0f}' for p in new_pars])
     pars = coin.load_pars('validation')
     pars.update(new_pars)
+
+    pars.update({'max_cores': max_cores})
 
     # Instantiate GM with current config's parset
     gm = genmodel_func({'pars': pars, 'name': parsetname})
@@ -154,7 +162,7 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
 
     # Store
     # Note: average over time points: get one value per sample
-    data_config = {'gamma_t': new_pars['gamma_t'],
+    data = {'gamma_t': new_pars['gamma_t'],
                    'alpha_t': new_pars['alpha_t'],
                    'rho_t': new_pars['rho_t'],
                    'ctx_count': len(np.unique(C)),
@@ -171,14 +179,14 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
                              'logp_c_avg': logp_c_LI.mean(1),
                              'logp_c_sum': logp_c_LI.sum(1)}}
     if mode == 'matlab':
-        data_config['Matlab'] = {'time': t_M,
+        data['Matlab'] = {'time': t_M,
                                  'logp_y_avg': logp_coin_M.mean(1),
                                  'logp_y_sum': logp_coin_M.sum(1),
                                  'mse_y_avg': mse_coin_M,
                                  'logp_c_avg': logp_c_coin_M.mean(1),
                                  'logp_c_sum': logp_c_coin_M.sum(1)}
 
-    return data_config
+    return data
 
 
 def main():
@@ -226,13 +234,13 @@ def main():
     nruns = 1
     
     # 'matlab': matlab and python, 'python': only Python
-    mode = 'matlab'
+    mode = 'python'
     
     # Define number of cores used across runs
-    max_cores = None # But doesn't have impact
+    max_cores = 1 # But doesn't have impact since the parallel processing in inference is done across runs # NOTE: should use max_cores OR max_cores_configs
 
     # Define number of cores used across multiple configs
-    max_cores_configs = 1
+    max_cores_configs = os.cpu_count()
 
     # Results path
     if not os.path.exists(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")):

@@ -7,7 +7,7 @@ import matplotlib.colors
 import glob
 import os.path
 import csv
-import matlab.engine
+# import matlab.engine
 import scipy.optimize
 import seaborn as sns
 import copy
@@ -113,7 +113,7 @@ class GenerativeModel():
 
     def __init__(self, parset):
 
-        self.pool = ProcessingPool()
+        # self.pool = ProcessingPool()
 
         if type(parset) is str:
             self.pars   = load_pars(parset)
@@ -132,6 +132,9 @@ class GenerativeModel():
         self.alpha_t = self.pars['alpha_t']
         self.alpha_q = self.pars['alpha_q']
         self.rho_t   = self.pars['rho_t']
+
+        self.max_cores=self.pars['max_cores']
+
 
     def export_pars(self):
         """Returns a dictionary with the current hyperparametrisation
@@ -219,7 +222,12 @@ class GenerativeModel():
         # Next line ensures all instances are sampled with different seeds
         seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
         
-        res = self.pool.map(self.generate_session, seeds)
+        if self.max_cores is None or self.max_cores > 1:
+            pool = ProcessingPool(nodes=self.max_cores)
+            res = pool.map(self.generate_session, seeds)
+            # res = self.pool.map(self.generate_session, seeds)
+        else:
+            res = [self.generate_session(seed) for seed in seeds]
 
         # parallel_generate_session = functools.partial(self.generate_session)
         # with multiprocessing.Pool() as pool:
@@ -258,7 +266,12 @@ class GenerativeModel():
         self.n_trials = n_trials
         seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
 
-        res = self.pool.map(self.sample_contexts, seeds)
+        if self.max_cores is None or self.max_cores > 1:
+            # res = self.pool.map(self.sample_contexts, seeds)
+            pool = ProcessingPool(nodes=self.max_cores)
+            res = pool.map(self.sample_contexts, seeds)
+        else:
+            res = [self.sample_contexts(seed) for seed in seeds]
 
         # parallel_generate_session = functools.partial(self.generate_session)
         # with multiprocessing.Pool() as pool:
@@ -466,7 +479,7 @@ class GenerativeModel():
                     parvals.append(self.pars[p])
 
         if mode == 'matlab':
-            if max_cores==None:
+            if max_cores is None:
                 # max_cores==None in Python defaults to the maximum number of cores available, but in Matlab it needs to be assessed and passed explicitely
                 max_cores = int(eng.feature('numCores')) # returns max number of physical cores (Matlab does not allow hyperthreading)
             Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), n_ctx, max_cores, nargout=6)
@@ -741,12 +754,18 @@ class GenerativeModel():
             optimal integration time constant tau
         """
 
+        X = self.generate_batch(n_trials, n_train_instances)[0][:, :, 0]
+
         def fn(tau):
-            res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
+            if self.max_cores is None or self.max_cores > 1:
+                pool = ProcessingPool(nodes=self.max_cores)
+                res = pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
+                # res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
+            else:
+                res = [self.estimate_leaky_average(x[None, ...], tau) for x in X]
             mse = np.mean([((r[0] - x)**2).mean() for r, x in zip(res, X)])
             return(mse)
 
-        X = self.generate_batch(n_trials, n_train_instances)[0][:, :, 0]
 
         optimRes = scipy.optimize.minimize_scalar(fn, bounds=(0, X.shape[1]), 
                                                      method='bounded', 
@@ -755,7 +774,13 @@ class GenerativeModel():
             best_t = optimRes.x
         else:
             taus = np.arange(100, -1, -1)
-            res  = self.pool.map(self._estimate_leaky_average_call_, [(x, taus) for x in X])
+            if self.max_cores is None or self.max_cores > 1:
+                pool = ProcessingPool(nodes=self.max_cores)
+                res  = pool.map(self._estimate_leaky_average_call_, [(x, taus) for x in X])
+                # res  = self.pool.map(self._estimate_leaky_average_call_, [(x, taus) for x in X])
+            else:
+                res = [self.estimate_leaky_average(x, tau=taus) for x in X]         
+            
             z_slid = np.array([r[0] for r in res])
             best_t = taus[((z_slid[:, 0, :] - X)**2).mean((0,1)).argmin()]
 
