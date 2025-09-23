@@ -20,15 +20,13 @@ import seaborn as sns
 import sys
 import time
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import COIN_Python.coin as coinp
-
 from icecream import ic
 from pathos.multiprocessing import ProcessingPool
 from tqdm import tqdm
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'COIN_Python')))
 import COIN_Python.coin as coinp
 
 import functools
@@ -662,10 +660,18 @@ class GenerativeModel():
         e_beta : np.array
             E[beta] distribution up to item n_contexts (note that e_beta.sum()<1)
         """
-        c = self.generate_context_batch(n_trials, n_samples)['C']
-        b = np.array([[(c[n] == ctx).mean() for ctx in range(n_contexts)] for n in range(n_samples)])
+        c_series  = self.generate_context_batch(n_trials, n_samples)['C']
 
-        return b.mean(0)
+        # Empirical distribution of contexts in each sample
+        empirical = [[(c == ctx).mean() for ctx in range(n_contexts)] for c in c_series]
+
+        # Single sample of uniform distribution for contexts with p < 1/n_samples
+        uniform   = [1/n_contexts for ctx in range(n_contexts)]
+
+        # Global empirical distribution
+        glob_dist = np.array(empirical + [uniform]).mean(0)
+
+        return glob_dist
 
     def estimate_leaky_average(self, y, tau=None):
         """Runs a leaky integrator with integration time constant tau to generate predictions for
@@ -846,7 +852,6 @@ class GenerativeModel():
         fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
     # Benchmarks
-
     def benchmark(self, n_trials=1000, n_instances=16, suffix=None, eng=None, save=True):
         """Performs a thorough benchmarking of the generative model for the given number of trials. 
         The function stores the benchmarks in a pickle for easy retrieval and only performs the
@@ -917,11 +922,11 @@ class GenerativeModel():
 
             print(f'Estimating coin...', flush=True)
 
-            z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng, n_contexts=64)
+            z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng, n_ctx=64)
             loglamb = np.log(lamb + np.exp(minloglik))
 
             coin_mse = ((z_coin - X[..., 0])**2).mean(1)
-            cums_cump_coin = np.array([(cump_coin <= f).sum(1)/cump_coin.shape[1] for f in F])
+            cums_cump_coin = np.array([(cump_coin[..., 0] <= f).sum(1)/cump_coin.shape[1] for f in F])
             coin_kol = abs(cums_cump_coin - F[:, np.newaxis]).max(0)
             coin_ce  = ll_coin.mean(1)
 
@@ -1665,6 +1670,9 @@ def load_pars(parset):
                 pars['mu_a']    = 0.01
                 pars['si_a']    = 0.2
                 pars['si_d']    = 1.0
+        
+        pars['max_cores'] = 12
+
         return(pars)
 
 
@@ -2143,9 +2151,6 @@ def load_group_data():
 
     return(dd)
 
-
-
-
         
 def instantiate_coin(parlist, parvals):
     inf = coinp.COIN()
@@ -2159,8 +2164,7 @@ def instantiate_coin(parlist, parvals):
     inf.sigma_motor_noise = 0
     
     return inf
-    
-    
+        
 
 def call_coin(y, parlist=[], parvals=[], nruns=10, n_ctx=10, max_cores=1):
     y = np.squeeze(y)       
