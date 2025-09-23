@@ -744,12 +744,38 @@ class GenerativeModel():
                        not force_sequential and
                        (self.max_cores is None or self.max_cores > 1))
 
+        # Core leaky integrator computation function
+        def compute_leaky_integrator(y_batch, tau_val):
+            """Core leaky integrator implementation."""
+            if type(tau_val) != np.ndarray:
+                tau_val = np.array([tau_val])
+
+            weights = np.zeros((y_batch.shape[1], len(tau_val)))
+            weights[:, tau_val>0] = np.exp(- np.einsum('T,m->Tm', np.arange(y_batch.shape[1], 0, -1), 1/tau_val[tau_val>0]))
+            for tix in np.where(tau_val<=0)[0]:
+                weights[:,tix] = np.eye(y_batch.shape[1])[-1]
+
+            z_slid, s_slid = np.zeros((y_batch.shape[0],) + weights.shape), np.ones((y_batch.shape[0],) + weights.shape)
+
+            for t in range(1, y_batch.shape[1]):
+                w = weights[-t:,:] / weights[-t:, :].sum(0)
+                z_slid[:, t, :] = np.einsum('bT,Tm->bm', y_batch[:,:t], w)
+                s_slid[:, t, :] = np.sqrt(np.einsum('bTm,Tm->bm', (y_batch[:, :t, np.newaxis] - z_slid[:, :t,:])**2, w))
+
+            logp = -0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y_batch[:,:,np.newaxis]) / s_slid)**2
+            cump = 0.5 * (1 + scipy.special.erf((y_batch[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
+
+            if len(tau_val) == 1:
+                z_slid, logp, cump = z_slid[..., 0], logp[..., 0], cump[..., 0]
+
+            return z_slid, logp, cump
+
         if use_parallel:
             # Use parallel processing for batch inputs
             args_list = [(x[None, ...], tau) for x in y_core]
 
             pool = ProcessingPool(nodes=self.max_cores)
-            res = pool.map(lambda args: self._estimate_leaky_single(args[0], args[1]), args_list)
+            res = pool.map(lambda args: compute_leaky_integrator(args[0], args[1]), args_list)
 
             # Process results into standard array format
             z_slid = np.array([r[0][0, :] if r[0].ndim > 1 else r[0] for r in res])
@@ -759,7 +785,7 @@ class GenerativeModel():
             return z_slid, logp, cump
         else:
             # Use sequential processing for single sequences or when forced
-            z_slid, logp, cump = self._estimate_leaky_single(y_core, tau)
+            z_slid, logp, cump = compute_leaky_integrator(y_core, tau)
 
             # Remove batch dimension for single sequences
             if is_single_sequence:
@@ -768,31 +794,6 @@ class GenerativeModel():
                 cump = cump[0] if cump.ndim > 1 else cump
 
             return z_slid, logp, cump
-
-    def _estimate_leaky_single(self, y, tau):
-        """Core leaky integrator implementation for single sequence or batch."""
-        if type(tau) != np.ndarray:
-            tau = np.array([tau])
-
-        weights = np.zeros((y.shape[1], len(tau)))
-        weights[:, tau>0] = np.exp(- np.einsum('T,m->Tm', np.arange(y.shape[1], 0, -1), 1/tau[tau>0]))
-        for tix in np.where(tau<=0)[0]:
-            weights[:,tix] = np.eye(y.shape[1])[-1]
-
-        z_slid, s_slid = np.zeros((y.shape[0],) + weights.shape), np.ones((y.shape[0],) + weights.shape)
-
-        for t in range(1, y.shape[1]):
-            w = weights[-t:,:] / weights[-t:, :].sum(0)
-            z_slid[:, t, :] = np.einsum('bT,Tm->bm', y[:,:t], w)
-            s_slid[:, t, :] = np.sqrt(np.einsum('bTm,Tm->bm', (y[:, :t, np.newaxis] - z_slid[:, :t,:])**2, w))
-
-        logp = -0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y[:,:,np.newaxis]) / s_slid)**2
-        cump = 0.5 * (1 + scipy.special.erf((y[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
-
-        if len(tau) == 1:
-            z_slid, logp, cump = z_slid[..., 0], logp[..., 0], cump[..., 0]
-
-        return(z_slid, logp, cump)
 
     def fit_best_tau(self, n_trials=5000, n_train_instances=500):
         """Finds the integration time constant tau minimising prediction error for the current
