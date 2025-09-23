@@ -429,8 +429,77 @@ class GenerativeModel():
 
         return list(ordered_contexts)
 
-    # Coin estimation
+    def sample_contexts(self, seed=None, n_trials=None):
+        """Samples a sequence of contexts by simulating a markov chain. Each call uses an 
+        independent sample of pi_t and beta_t.
 
+        Parameters
+        ----------
+        seed : int (optional)
+            random seed for the generation of the sequence (useful for parallelisation)
+        n_trials : int
+            number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
+            is readout from self.n_trials
+
+        Returns.
+        -------
+        contexts : list or integers
+            sequence of sampled contexts
+        """
+
+        if seed is not None:
+            np.random.seed(seed)
+        if n_trials is not None: 
+            self.n_trials = n_trials
+
+        kappa_t = self.alpha_t * self.rho_t / (1 - self.rho_t)
+        N = np.zeros((10, 10))  # total N context transitions
+        
+        contexts, N[0, 0] = [0], 1  # Initialisation (assuming contexts[0] = 0)
+        beta = self._break_new_partition_([1], self.gamma_t)
+
+        for t in range(1, self.n_trials):
+            # Sample context
+            contexts.append(self._sample_customer_(beta, N, contexts[t-1], self.alpha_t, kappa_t))
+            if contexts[-1] == len(beta)-1: # If opening a new context:
+                beta = self._break_new_partition_(beta, self.gamma_t)
+                if len(beta) > N.shape[0]: # pad N if contexts > max_ctx
+                    N = np.pad(N, ((0, N.shape[0]), (0, N.shape[0])))
+            N[contexts[-2], contexts[-1]] += 1  # Add transition count 
+
+        return contexts
+
+    def sample_cues(self, contexts):
+        """Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
+        Cue emission has not been thoroughly tested
+
+        Parameters
+        ----------
+        contexts : list of integers
+            sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
+
+        Returns
+        -------
+        cues : list of integers
+            sequence of emitted cues
+        """
+
+        N = np.zeros((max(contexts) + 1, 10)) # total N context ~ cue pairs
+        
+        cues, N[0, 0] = [0], 1 # Initialisation (assuming cues[0] = 0)
+        beta = self._break_new_partition_([1], self.gamma_q)
+
+        for c_t in contexts[1:]:
+            cues.append(self._sample_customer_(beta, N, c_t, self.alpha_q)) # Sample cue
+            if cues[-1] == len(beta): # If opening a new cue:
+                beta = self._break_new_partition_(beta, self.gamma_q) 
+                if cues[-1] > N.shape[0] - 1: # pad N if cues > max_cues
+                    N = np.pad(N, ((0, N.shape[0]), (0, 0)))
+            N[c_t, cues[-1]] += 1  # Add cue-context association count 
+            
+        return cues
+
+    # Coin estimation
     def estimate_coin(self, y, mode="python", eng=None, nruns=1, n_ctx=10, max_cores=1):
         """Runs the COIN inference algorithm on a batch of observations
         Requires MATLAB and the COIN inference implementation (https://github.com/jamesheald/COIN)
@@ -1065,413 +1134,6 @@ class GenerativeModel():
 
         return r
 
-
-class ExplicitGenerativeModel(GenerativeModel):
-    """
-    Extends GenerativeModel to include context and cue sampling using the explicit method: i.e., 
-    first sampling the transition probability matrices and then simulating a Markov Chain. This 
-    method is an approximation. Cue emission has not been thoroughly tested.
-
-    This method is described in the COIN paper https://www.nature.com/articles/s41586-021-04129-3
-    but COIN inference is not optimal on its samples; this could be due to an implementation error
-    or to a misalignement between the parametrisations of the sampling and inference methods: use 
-    with caution
-
-    Additional Methods
-    -------
-    sample_pi_t(alpha, beta, rho)
-        Samples a finite approximation of the ground truth transition probability matrix
-
-    sample_pi_q(alpha, beta, N):
-        Samples a finite approximation of the ground truth cue emission probability matrix.
-
-    sample_contexts(seed, n_trial):
-        Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-        independent sample of pi_t and beta_t.
-
-    sample_cues(contexts):
-        Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-
-    """
-
-    def __init__(self, parset):
-        super().__init__(parset)
-
-    # Generic sampling methods
-    def _sample_DP_(self, alpha, H):
-        """Samples from a dirichlet process
-
-        Parameters
-        ----------
-        alpha : float
-            concentration parameter
-        H     : np.array
-            base distribution (a discrete probability distribution)
-
-        Returns
-        -------
-        np.array
-           sample (a discrete probability distribution)
-        """
-
-        pi_tilde = self._sample_GEM_(alpha, threshold=1E-8)
-        theta    = random.choices(range(len(H)), H, k=len(pi_tilde))
-        G = pi_tilde @ np.eye(len(H))[theta]
-
-        return G
-
-    def _sample_GEM_(self, gamma, threshold=1E-8):
-        """Samples from a GEM distribution using the stick-breaking construction
-
-        Parameters
-        ----------
-        gamma     : float
-            concentration parameter (controls the relative length of each break point) 
-        threshold : float
-            maximum stick length before stopping the theoretically-infinite process
-
-        Returns
-        -------
-        np.array
-           sample (a discrete probability distribution)
-        """
-
-        sample, stick_len = [], 1.
-
-        while stick_len > threshold:
-            beta_sample = ss.beta.rvs(1, gamma)
-            sample.append(stick_len * beta_sample)
-            stick_len *= 1 - beta_sample
-
-         # Samples are renormalised; alternatively we could create a last segment with stick_len
-        sample = np.array(sample) / np.sum(sample)
-
-        return sample
-
-    # Parameter sampling methods
-    def sample_pi_t(self, alpha, beta, rho):
-        """Samples a finite approximation of the ground truth transition probability matrix
-
-        Parameters
-        ----------
-        alpha  : float
-            concentration parameter controls the dispersion of the rows with respect to beta 
-        beta : np.array (a discrete probability distribution)
-            global probabilities
-        rho : float 
-            normalised self-transition bias; 0 < rho < 1
-        
-        Returns
-        -------
-        np.array
-           transition probability matrix; row n is the transition distribution from context n
-        """
-
-        pi = np.zeros((len(beta), len(beta)))
-        for j in range(len(beta)):
-            delta = np.eye(len(beta))[j]
-            pi[j, :] = self._sample_DP_(alpha / (1-rho), (1-rho) * beta + rho * delta)
-
-        return pi
-
-    def sample_pi_q(self, alpha, beta, N):
-        """Samples a finite approximation of the ground truth cue emission probability matrix.
-
-        Parameters
-        ----------
-        alpha  : float
-            concentration parameter controls the dispersion of the rows with respect to beta 
-        beta : np.array (a discrete probability distribution)
-            global cue probabilities
-        N : int 
-            number of contexts
-        
-        Returns
-        -------
-        np.array
-           cue emission probability matrix; row n is the probability distribution across cues for
-           context n
-        """
-
-        pi = np.zeros((N, len(beta)))
-        for j in range(N):
-            pi[j, :] = self._sample_DP_(alpha, beta)
-
-        return pi
-
-    # Observation sampling methods
-    def sample_contexts(self, seed=None, n_trials=None):
-        """Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-        independent sample of pi_t and beta_t.
-
-        Parameters
-        ----------
-        seed : int (optional)
-            random seed for the generation of the sequence (useful for parallelisation)
-        n_trials : int (optional)
-            number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
-            is readout from self.n_trials
-
-        Returns
-        -------
-        contexts : np.array 
-            sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one for
-            compatibility with pytorch
-        beta_t   : np.array
-            ground-truth global context probabilities
-        pi_t     : np.array
-            ground-truth transition probability matrix
-        """
-
-        if seed is not None:
-            np.random.seed(seed)
-        if n_trials is not None: 
-            self.n_trials = n_trials
-
-        beta_t = self._sample_GEM_(self.pars['gamma_t'])
-        pi_t   = self.sample_pi_t(self.pars['alpha_t'], beta_t, self.pars['rho_t'])
-
-        # First context sampled from the global distribution
-        contexts = random.choices(range(len(beta_t)), beta_t)
-        #contexts = [0]
-
-        n_ctx = len(beta_t)
-        for t in range(1, self.n_trials):
-            contexts += random.choices(range(n_ctx), pi_t[contexts[t-1], :])
-
-        self.beta_t = beta_t
-        self.pi_t   = pi_t
-        self.n_ctx  = n_ctx
-
-        return(contexts, beta_t, pi_t)
-
-    def sample_cues(self, contexts):
-        """Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-        Cue emission has not been thoroughly tested
-
-        Parameters
-        ----------
-        contexts : np.array
-            sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
-
-        Returns
-        -------
-        cues : np.array 
-            sequence of emitted cues
-        """
-
-        beta_q  = self._sample_GEM_(self.pars['gamma_q'])
-        pi_q    = self.sample_pi_q(self.pars['alpha_q'], beta_q, max(contexts)+1)
-        n_cues  = len(beta_q)
-
-        cues = [random.choices(range(n_cues), pi_q[c, :])[0] for c in contexts]
-
-        self.beta_q = beta_q
-        self.pi_q   = pi_q
-        self.n_cues  = n_cues
-
-        return cues
-
-
-class CRFGenerativeModel(GenerativeModel):
-    """
-    Extends GenerativeModel to include context and cue sampling using the Chinese Restaurant 
-    Franchise method. This method is exact. Cue emission has not been thoroughly tested.
-
-    This method is described in the COIN paper https://www.nature.com/articles/s41586-021-04129-3
-    but COIN inference is not optimal on its samples; this could be due to an implementation error
-    or to a misalignement between the parametrisations of the sampling and inference methods: use 
-    with caution
-
-    Additional Methods
-    -------
-    sample_contexts(seed=None, n_trials=None):
-        Samples a sequence of contexts using the CRF construction.
-
-    sample_cues(contexts):
-        Samples a sequence of cues.
-    """
-
-    def __init__(self, parset):
-        super().__init__(parset)
-
-    # Observation sampling methods
-    def sample_contexts(self, seed=None, n_trials=None):
-        """Samples a sequence of contexts by simulating a sticky CRF process.
-
-        Parameters
-        ----------
-        seed : int (optional)
-            random seed for the generation of the sequence (useful for parallelisation)
-        n_trials : int
-            number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
-            is readout from self.n_trials
-
-        Returns
-        -------
-        contexts : list or integers
-            sequence of sampled contexts
-        """
-
-        if seed is not None:
-            np.random.seed(seed)
-        if n_trials is not None: 
-            self.n_trials = n_trials
-
-        max_j = 2
-        max_t = 2
-        c = np.zeros(self.n_trials, dtype=int)
-
-        # M[j, k]  = n of tables serving dish k in restaurant j
-        # Mb[j, k] = n of tables having considered dish k in restaurant j
-        M, Mb = np.zeros((max_j, max_j), dtype=int), np.zeros((max_j, max_j), dtype=int)
-        
-        # N[j, l]  = n of customers in restaurant j sitting at table l
-        # D[j, l]  = dish served at table l of restaurant j
-        N, D = np.zeros((max_j, max_t), dtype=int), -np.ones((max_j, max_t), dtype=int)
-
-        # Very first customer:
-        j, table = 0, 0
-        N[j, table] += 1 
-
-        weights_dish = np.array([1, self.gamma_t])
-        considered_dish = random.choices(range(len(weights_dish)), weights_dish)[0]
-        dish = random.choices([considered_dish, c[0]], [1-self.rho_t, self.rho_t])[0]
-        D[j, table] = dish
-        c[1] = dish
-
-        for t in range(1, self.n_trials-1):
-            
-            # Restaurant
-            j = c[t]
-
-            # Table
-            weights_table = np.append(N[j, N[j]>0], self.alpha_t/(1-self.rho_t))
-            table = random.choices(range(len(weights_table)), weights_table)[0]
-            if table >= N.shape[1]:
-                N = np.append(N, np.zeros((N.shape[0], max_t), dtype=int), 1)
-                D = np.append(D, -np.ones((D.shape[0], max_t), dtype=int), 1)
-            N[j, table] += 1 
-
-            # Dish
-            if D[j, table] == -1: # If the table has no dish we sample a new one
-                weights_dish = np.append(Mb.sum(0)[Mb.sum(0)>0], self.gamma_t)
-                considered_dish = random.choices(range(len(weights_dish)), weights_dish)[0]
-                
-                if considered_dish >= Mb.shape[1]:
-                    N  = np.append(N,  np.zeros((max_j, N.shape[1]),  dtype=int), 0)
-                    D  = np.append(D,  -np.ones((max_j, D.shape[1]),  dtype=int), 0)
-                    M  = np.append(M,  np.zeros((max_j, M.shape[1]),  dtype=int), 0)
-                    Mb = np.append(Mb, np.zeros((max_j, Mb.shape[1]), dtype=int), 0)
-                    M  = np.append(M,  np.zeros((M.shape[0], max_j),  dtype=int), 1)
-                    Mb = np.append(Mb, np.zeros((Mb.shape[0], max_j), dtype=int), 1)
-
-                dish = random.choices([considered_dish, j], [1-self.rho_t, self.rho_t])[0]
-                Mb[j, considered_dish] += 1
-                M[j, dish] += 1
-                D[j, table] = dish
-            else: # Else we take the assigned dish
-                dish = D[j, table]
-
-            # Next context is current dish
-            c[t+1] = dish
-
-        contexts = list(c)
-
-        return contexts
-
-    def sample_cues(self, contexts):
-
-        """Samples a sequence of cues by simulating a CRF process.
-        Cue sampling has not been thoroughly tested
-
-        Parameters
-        ----------
-        contexts : list of integers
-            sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
-
-        Returns
-        -------
-        cues : list of integers
-            sequence of emitted cues
-        """
-        
-        max_j = max(contexts) + 1
-        max_d = max(5, max(contexts) + 1)
-        max_t = 500
-
-        n_trials = len(contexts)
-        q = np.zeros(n_trials, dtype=int)
-
-        # M[j, k]  = n of tables serving dish k in restaurant j
-        M = np.zeros((max_j, max_d), dtype=int)
-        
-        # N[j, l]  = n of customers in restaurant j sitting at table l
-        # D[j, l]  = dish served at table l of restaurant j
-        N, D = np.zeros((max_j, max_t), dtype=int), -np.ones((max_j, max_t), dtype=int)
-
-        # Very first customer:
-        j, table = 0, 0
-        N[j, table] += 1 
-        weights_dish = np.array([1, self.gamma_q])
-        dish = random.choices(range(len(weights_dish)), weights_dish)[0]
-        D[j, table] = dish
-        q[0] = dish
-
-        for t in range(n_trials):
-            
-            # Restaurant
-            j = contexts[t]
-
-            # Table
-            weights_table = np.append(N[j, N[j]>0], self.alpha_q)
-            table = random.choices(range(len(weights_table)), weights_table)[0]
-            if table >= N.shape[1]:
-                N = np.append(N, np.zeros((max_j, max_t), dtype=int), 1)
-                D = np.append(D, -np.ones((max_j, max_t), dtype=int), 1)
-
-            N[j, table] += 1 
-
-            # Dish
-            if D[j, table] == -1: # If the table has no dish we sample a new one
-                weights_dish = np.append(M.sum(0)[M.sum(0)>0], self.gamma_q)
-                dish = random.choices(range(len(weights_dish)), weights_dish)[0]
-                if dish >= M.shape[1]:
-                    M = np.append(M, np.zeros((max_j, max_d), dtype=int), 1)
-                M[j, dish] += 1
-                D[j, table] = dish
-            else: # Else we take the assigned dish
-                dish = D[j, table]
-
-            # emitted cue is current dish
-            q[t] = dish
-
-        cues = list(q)
-
-        return cues
-
-
-class UrnGenerativeModel(GenerativeModel):
-    """
-    Extends GenerativeModel to include context and cue sampling using using an unkown method
-    resembling Polya's Urn. The method is exact. Cue emission has not been thoroughly tested.
-
-    This method is not described in the COIN paper 
-    https://www.nature.com/articles/s41586-021-04129-3
-    but COIN inference is optimal on its samples
-
-    Additional Methods
-    -------
-    sample_contexts(seed=None, n_trials=None):
-        Samples a sequence of contexts.
-
-    sample_cues(contexts):
-        Samples a sequence of cues.
-    """
-
-    def __init__(self, parset):
-        super().__init__(parset)
-
     # Auxiliary functions
     def _break_new_partition_(self, beta, gamma):
         """Runs one stick-breaking step of the GEM distribution
@@ -1522,77 +1184,6 @@ class UrnGenerativeModel(GenerativeModel):
         sticky_w = 0 if kappa == 0 else kappa * np.eye(len(beta))[j]
         global_w = N[j, 0:len(beta)]
         return random.choices(range(len(beta)), beta_w + sticky_w + global_w, k=1)[0]
-
-    # Observation sampling methods
-    def sample_contexts(self, seed=None, n_trials=None):
-        """Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-        independent sample of pi_t and beta_t.
-
-        Parameters
-        ----------
-        seed : int (optional)
-            random seed for the generation of the sequence (useful for parallelisation)
-        n_trials : int
-            number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
-            is readout from self.n_trials
-
-        Returns.
-        -------
-        contexts : list or integers
-            sequence of sampled contexts
-        """
-
-        if seed is not None:
-            np.random.seed(seed)
-        if n_trials is not None: 
-            self.n_trials = n_trials
-
-        kappa_t = self.alpha_t * self.rho_t / (1 - self.rho_t)
-        N = np.zeros((10, 10))  # total N context transitions
-        
-        contexts, N[0, 0] = [0], 1  # Initialisation (assuming contexts[0] = 0)
-        beta = self._break_new_partition_([1], self.gamma_t)
-
-        for t in range(1, self.n_trials):
-            # Sample context
-            contexts.append(self._sample_customer_(beta, N, contexts[t-1], self.alpha_t, kappa_t))
-            if contexts[-1] == len(beta)-1: # If opening a new context:
-                beta = self._break_new_partition_(beta, self.gamma_t)
-                if len(beta) > N.shape[0]: # pad N if contexts > max_ctx
-                    N = np.pad(N, ((0, N.shape[0]), (0, N.shape[0])))
-            N[contexts[-2], contexts[-1]] += 1  # Add transition count 
-
-        return contexts
-
-    def sample_cues(self, contexts):
-        """Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-        Cue emission has not been thoroughly tested
-
-        Parameters
-        ----------
-        contexts : list of integers
-            sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
-
-        Returns
-        -------
-        cues : list of integers
-            sequence of emitted cues
-        """
-
-        N = np.zeros((max(contexts) + 1, 10)) # total N context ~ cue pairs
-        
-        cues, N[0, 0] = [0], 1 # Initialisation (assuming cues[0] = 0)
-        beta = self._break_new_partition_([1], self.gamma_q)
-
-        for c_t in contexts[1:]:
-            cues.append(self._sample_customer_(beta, N, c_t, self.alpha_q)) # Sample cue
-            if cues[-1] == len(beta): # If opening a new cue:
-                beta = self._break_new_partition_(beta, self.gamma_q) 
-                if cues[-1] > N.shape[0] - 1: # pad N if cues > max_cues
-                    N = np.pad(N, ((0, N.shape[0]), (0, 0)))
-            N[c_t, cues[-1]] += 1  # Add cue-context association count 
-            
-        return cues
 
 
 def load_pars(parset):
