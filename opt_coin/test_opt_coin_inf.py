@@ -131,7 +131,7 @@ def run_single_config(config, config_values, genmodel_func, max_cores, n_samples
 
     # should fit best tau before calling estimate_leaky_average:
     gm.fit_best_tau(n_trials, 10 * n_samples)
-    z_LI, logp_LI, _ = gm.estimate_leaky_average_parallel(Y)
+    z_LI, logp_LI, _ = gm.estimate_leaky_average(Y)
     mse_LI = ((z_LI - Y)**2).mean(1)
     logp_c_LI = compute_logpc(C, lamb=None, e_beta=e_beta, n_lim=n_sim*n_samples)
     t_LI = (time.time() - t0) / 60
