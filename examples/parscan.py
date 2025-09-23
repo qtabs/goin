@@ -61,7 +61,6 @@ def compute_parscan(genmodel_func, results_pickle, parscan_config, n_samples, n_
 		return
 
 
-	eng = coin.initialise_matlab_engine()
 	tt0 = time.time()
 
 	for k, N in enumerate(Ns):
@@ -101,7 +100,7 @@ def compute_parscan(genmodel_func, results_pickle, parscan_config, n_samples, n_
 		# Measuring coin performance 
 		t0 = time.time()
 		print('[COIN ', end=' ', flush=True)
-		z_coin, logp_coin_all, _, lamb = gm.estimate_coin(X, eng)
+		z_coin, logp_coin_all, _, lamb = gm.estimate_coin(X)
 		mse_coin[N]   = ((z_coin - X)**2).mean(1)
 		logp_coin[N]  = logp_coin_all.sum(1)  # .sum(1)? # Reason to delete axis 1: code expects log to be n_samples, n_trials ("same dimensional arrangement as y") but runCOIN.m script specifies logp as one-dim n_samples-long
 		logp_ctx_coin = [[np.log(lamb[b,C[b,t],t]) for t in range(n_trials)] for b in range(n_samples)]
@@ -134,7 +133,6 @@ def recompute_nan_trials(results_pickle, parscan_config, n_trials):
 	if Ns == []:
 		return
 
-	eng = coin.initialise_matlab_engine()
 	tt0 = time.time()
 
 
@@ -175,7 +173,7 @@ def recompute_nan_trials(results_pickle, parscan_config, n_trials):
 		# Measuring coin performance 
 		t0 = time.time()
 		print('[COIN ', end=' ', flush=True)
-		z_coin, logp_coin_all, _, lamb = gm.estimate_coin(X, eng)
+		z_coin, logp_coin_all, _, lamb = gm.estimate_coin(X)
 
 		mse_coin[N][nan_samples]  = ((z_coin - X)**2).mean(1)
 		logp_coin[N][nan_samples] = logp_coin_all.sum()  # .sum(1)

@@ -57,12 +57,8 @@ def compute_logpc(C, lamb=None, e_beta=None, n_lim=100):
 def run_single_config_wrapper(args):
     return run_single_config(*args)
 
-def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mode='matlab', max_cores=1, max_cores_configs=1):
+def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, max_cores=1, max_cores_configs=1):
     
-    # If Matlab, activate matlab engine        
-    eng = None
-    if mode == 'matlab':
-        eng = coin.initialise_matlab_engine()
 
     # Define all combinations of hyperparameters values provided in config_values
     n_par_vals = tuple([len(config_values[p]) for p in config_values.keys()])
@@ -79,7 +75,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
     if max_cores_configs is None or max_cores_configs > 1:
         # Prepare input for each config
         inputs = [
-            (config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials, nruns)
+            (config, config_values, genmodel_func, max_cores, n_samples, n_trials, nruns)
             for config in configs
         ]
 
@@ -98,7 +94,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
     else:
         for k, config in tqdm(enumerate(configs)):
 
-            data_k = run_single_config(config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials, nruns)
+            data_k = run_single_config(config, config_values, genmodel_func, max_cores, n_samples, n_trials, nruns)
             data[k] = data_k
 
     # Save the dictionary as a pickle file
@@ -107,7 +103,7 @@ def run_multiple_config(filename, config_values, n_samples, n_trials, nruns, mod
         pickle.dump(data, f)
 
 
-def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode, n_samples, n_trials, nruns):
+def run_single_config(config, config_values, genmodel_func, max_cores, n_samples, n_trials, nruns):
     # Select and instantiate list of params according to selected config
     new_pars = dict([(p, config_values[p][config[i]]) for i, p in enumerate(config_values.keys())])
     parsetname = '_'.join([f'{p}-{1000 * new_pars[p]:03.0f}' for p in new_pars])
@@ -143,18 +139,9 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
     ###### COIN inference, in Matlab and Python respectively
     n_particles = 100 # As set for inference object in goin/coin.py
 
-    ### Matlab
-    if mode == 'matlab':
-        t0 = time.time()
-        z_coin_M, logp_coin_M, _, lamb_M = gm.estimate_coin(Y, mode='matlab', eng=eng, nruns=nruns,
-                                                            n_ctx=max(n_ctx, 10), max_cores=max_cores)
-        mse_coin_M = ((z_coin_M - Y)**2).mean(1)
-        logp_c_coin_M = compute_logpc(C, lamb=lamb_M, e_beta=None, n_lim=n_particles*n_samples)
-        t_M = (time.time() - t0) / 60
-
     ### Python
     t0 = time.time()
-    z_coin, logp_coin, _, lamb = gm.estimate_coin(Y, mode='python', nruns=nruns, n_ctx=max(n_ctx, 10),
+    z_coin, logp_coin, _, lamb = gm.estimate_coin(Y, nruns=nruns, n_ctx=max(n_ctx, 10),
                                                   max_cores=max_cores)
     mse_coin = ((z_coin - Y)**2).mean(1)
     logp_c_coin = compute_logpc(C, lamb=lamb, e_beta=None, n_lim=n_particles*n_samples)
@@ -178,13 +165,6 @@ def run_single_config(config, config_values, eng, genmodel_func, max_cores, mode
                              'mse_y_avg': mse_LI,
                              'logp_c_avg': logp_c_LI.mean(1),
                              'logp_c_sum': logp_c_LI.sum(1)}}
-    if mode == 'matlab':
-        data['Matlab'] = {'time': t_M,
-                                 'logp_y_avg': logp_coin_M.mean(1),
-                                 'logp_y_sum': logp_coin_M.sum(1),
-                                 'mse_y_avg': mse_coin_M,
-                                 'logp_c_avg': logp_c_coin_M.mean(1),
-                                 'logp_c_sum': logp_c_coin_M.sum(1)}
 
     return data
 
@@ -246,7 +226,7 @@ def main():
     if not os.path.exists(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output")):
         os.makedirs(os.path.join(os.path.dirname(os.path.realpath(__file__)), "output"))
     filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), "output", f"{filename}.pkl")
-    run_multiple_config(filepath, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, mode=mode, max_cores=max_cores, max_cores_configs=max_cores_configs)
+    run_multiple_config(filepath, config_values=config_values, n_samples=n_samples, n_trials=n_trials, nruns=nruns, max_cores=max_cores, max_cores_configs=max_cores_configs)
 
     # Verify that the file has been saved
     if os.path.exists(filepath): print(f"Results saved in {filepath}")

@@ -14,7 +14,6 @@
 
 # Load modules needed
 module load Python
-module load MATLAB-IKUR/2024b
 
 
 # Create and activate conda env
@@ -25,13 +24,9 @@ conda activate /scratch/clevyfidel/conda_env/coin
 export LD_LIBRARY_PATH=/scratch/clevyfidel/conda_env/coin/lib:$LD_LIBRARY_PATH
 
 
-# Add MATLAB path
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/scicomp/builds/Rocky/8.7/Common/software/MATLAB/2024b/bin/glnxa64/
 # source ~/.bashrcq
 
 
-# Install matlabengine
-#/scratch/clevyfidel/conda_env/coin/bin/python -m pip install matlabengine==24.2.1
 
 
 OUTPUT="inference_results_512_moreconfigs_parallel"

@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import multiprocessing
 import numpy as np
 import os.path
-# import matlab.engine
 import pathlib
 import pickle
 import random
@@ -500,16 +499,20 @@ class GenerativeModel():
         return cues
 
     # Coin estimation
-    def estimate_coin(self, y, mode="python", eng=None, nruns=1, n_ctx=10, max_cores=1):
-        """Runs the COIN inference algorithm on a batch of observations
-        Requires MATLAB and the COIN inference implementation (https://github.com/jamesheald/COIN)
-        OR the Python version
+    def estimate_coin(self, y, nruns=1, n_ctx=10, max_cores=1):
+        """Runs the COIN inference algorithm on a batch of observations using the Python implementation
 
         Parameters
         ----------
         y   : np.array
-            sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is 
+            sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is
             set to one
+        nruns : int, optional
+            number of COIN runs (default: 1)
+        n_ctx : int, optional
+            maximum number of contexts (default: 10)
+        max_cores : int, optional
+            maximum number of cores for parallel processing (default: 1)
 
         Returns
         -------
@@ -518,27 +521,23 @@ class GenerativeModel():
         logp   : np.array
             log-probabilities of the input sequence y_t under the COIN posterior distribution; shape = (n_samples, nruns)
         cump   : np.array
-            cumulative probabilities of the input sequence y_t under the COIN posterior 
+            cumulative probabilities of the input sequence y_t under the COIN posterior
             distribution; same dimensional arrangement as y. Useful to measure calibration.
         lamb   : np.array
-            responsibilities lambda^c_t for each context c and time-step t. dim 0 runs across 
+            responsibilities lambda^c_t for each context c and time-step t. dim 0 runs across
             batches, dim 2 across time points, dim 1 across contexts (dimension equals the maximum
             number of contexts of the COIN model, currently set to 10+1)
 
         """
 
-        if mode == 'matlab' and eng is None:
-            eng = initialise_matlab_engine()
-
-        # Translation to the naming of the hyperparameters in James' implementation of the COIN
-        # inference algorithm 
+        # Translation to the naming of the hyperparameters in the COIN inference algorithm
         pmCoinDict = {'si_q'   : 'sigma_process_noise',
                       'si_r'   : 'sigma_sensory_noise',
                       'mu_a'   : 'prior_mean_retention',
                       'si_a'   : 'prior_precision_retention',
                       'si_d'   : 'prior_precision_drift',
                       'gamma_t': 'gamma_context',
-                      'alpha_t': 'alpha_context', 
+                      'alpha_t': 'alpha_context',
                       'rho_t'  : 'rho_context',
                       'gamma_q': 'gamma_cue',
                       'alpha_q': 'alpha_cue'}
@@ -552,41 +551,33 @@ class GenerativeModel():
                 else:
                     parvals.append(self.pars[p])
 
-        if mode == 'matlab':
-            if max_cores is None:
-                # max_cores==None in Python defaults to the maximum number of cores available, but in Matlab it needs to be assessed and passed explicitely
-                max_cores = int(eng.feature('numCores')) # returns max number of physical cores (Matlab does not allow hyperthreading)
-            Z = eng.runCOIN(matlab.double(y), parlist, parvals, matlab.double(nruns), n_ctx, max_cores, nargout=6)
-            z_coin, logp, cump, lamb = np.array(Z[0]), np.array(Z[1]), np.array(Z[2]), np.array(Z[3])
-        else: # 'python':
-            z_coin, logp, cump, lamb, _, _ = runCOIN(y, parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
+        z_coin, logp, cump, lamb, _, _ = runCOIN(y, parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
 
         return(z_coin, logp, cump, lamb)
 
-    def run_experiment_coin(self, experiment, N=20, eng=None, axs=None):
-        """Runs the COIN inference algorithm on the field sequence corresponding to one of the 
+    def run_experiment_coin(self, experiment, N=20, axs=None):
+        """Runs the COIN inference algorithm on the field sequence corresponding to one of the
         experiments of original COIN paper.
 
         Parameters
         ----------
         experiment : str
-            Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde) 
+            Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde)
             'interference', or (effect of environmental) 'consistency' (on learning rate)
         N   : int (optional)
             Number of runs
-        
+        axs : matplotlib axes (optional)
+            Axes to plot results on
+
         Returns
         -------
         u  : dict() (optional)
-            A dictionary encoding the predictions across the experiment conditions (keys); same 
+            A dictionary encoding the predictions across the experiment conditions (keys); same
             structure as each of the sub-dicts of U produced by initialise_experiments_U
         x0  : np.array
-            field values for one of the runs; dim 0 is set to 1, dim 1 runs across time points, 
+            field values for one of the runs; dim 0 is set to 1, dim 1 runs across time points,
             dim 2 is set to one. Useful for plotting.
         """
-
-        if eng is None:
-            eng = initialise_matlab_engine()
 
         if experiment == 'consistency':
             x  = generate_field_sequence(experiment, self.si_r, 1, pStay=0.5)
@@ -597,26 +588,26 @@ class GenerativeModel():
             pStayList, u = [0.1, 0.5, 0.9], dict()
             for p in pStayList:
                 x  = generate_field_sequence(experiment, self.si_r, N, pStay=p)
-                u0 = self.estimate_coin(x, eng)[0]
+                u0 = self.estimate_coin(x)[0]
                 u[p] = np.stack([u0[:, t+2]-u0[:,t] for t in triplets], axis=1)
 
         elif experiment == 'interference':
             nPlusList, u = [0, 13, 41, 112, 230, 369], dict()
             for nPlus in nPlusList:
                 x = generate_field_sequence(experiment, self.si_r, N, Np=nPlus)
-                u[nPlus] = self.estimate_coin(x, eng)[0][:, (160+nPlus):]
+                u[nPlus] = self.estimate_coin(x)[0][:, (160+nPlus):]
             x0 = x[0, 160+nPlus:, 0]
 
         elif experiment == 'savings':
             x = generate_field_sequence(experiment, self.si_r, N)
-            u0 = self.estimate_coin(x, eng)[0]
+            u0 = self.estimate_coin(x)[0]
             t0, t1, dur = 60, 60+125+15+50+50+60, 125
             u = {'first': u0[:, t0:(t0+dur)], 'second': u0[:, t1:(t1+dur)]}
             x0 = x[0, t0:(t0+dur), 0]
 
         if experiment == 'spontaneous' or experiment == 'evoked':
             x = generate_field_sequence(experiment, self.si_r, N)
-            u = self.estimate_coin(x, eng)[0]
+            u = self.estimate_coin(x)[0]
             x0 = x[0, :, 0]
 
         if axs is not None:
@@ -921,7 +912,7 @@ class GenerativeModel():
         fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
     # Benchmarks
-    def benchmark(self, n_trials=1000, n_instances=16, suffix=None, eng=None, save=True):
+    def benchmark(self, n_trials=1000, n_instances=16, suffix=None, save=True):
         """Performs a thorough benchmarking of the generative model for the given number of trials. 
         The function stores the benchmarks in a pickle for easy retrieval and only performs the
         computations if the pickle file does not exist.
@@ -991,7 +982,7 @@ class GenerativeModel():
 
             print(f'Estimating coin...', flush=True)
 
-            z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng, n_ctx=64)
+            z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, n_ctx=64)
             loglamb = np.log(lamb + np.exp(minloglik))
 
             coin_mse = ((z_coin - X[..., 0])**2).mean(1)
@@ -1350,27 +1341,6 @@ def load_recovery_data(subs=None):
 
     return y, t, f
 
-
-def initialise_matlab_engine():
-
-    """ Creates a MATLAB engine including all the paths necessary to call COIN() and
-        an initialised parallel pool. Since the intialisation takes up to one minute
-        it is a good idea to reuse the same engine when it is required to call COIN()
-        multiple times. Initially the engine was set as variabe and this functiona 
-        was a method of GenerativeModel(); however, matlab engines cannot be pickled
-        nor dilled, so including one as a variable of GenerativeModel() does not
-        allow to call its methods in parallel processes.
-
-        Returns
-        ---------
-        eng  : a callable MATLAB engine
-    """
-
-    eng = matlab.engine.start_matlab()
-    eng.addpath(f'{pathlib.Path(__file__).parent}', nargout=0)
-    eng.addCoinPaths(nargout=0)
-
-    return eng
 
 
 def generate_field_sequence(experiment, noise=0.03, batch_size=1, **kwargs):
