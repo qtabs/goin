@@ -738,29 +738,55 @@ class GenerativeModel():
 
         return(z_slid, logp, cump)
 
-    def _estimate_leaky_average_call_(self, inpars):
-        """ Wrapper of estimate_leaky_average to take in multiple parameters during 
-        parallelisation; not meant as a user-end method"""
+    def _run_parallel_leaky_average(self, X, tau, return_format='arrays'):
+        """Unified helper for parallelized leaky average computation
 
-        x, tau = inpars
-        return(self.estimate_leaky_average(x, tau=tau))
-    
+        Parameters
+        ----------
+        X : np.array
+            Batch of sequences to process
+        tau : float or np.array
+            Integration time constant(s)
+        return_format : str
+            'arrays' - return processed z_slid, logp, cump arrays
+            'raw' - return raw results from pool.map
+
+        Returns
+        -------
+        results : tuple
+            Depending on return_format:
+            - 'arrays': (z_slid, logp, cump) as np arrays
+            - 'raw': list of raw results from estimate_leaky_average
+        """
+
+        # Prepare input arguments for parallel processing
+        args_list = [(x[None, ...], tau) for x in X]
+
+        # Run parallel or sequential processing based on max_cores
+        if self.max_cores is None or self.max_cores > 1:
+            # Use ProcessingPool with lambda for direct method calls (no wrapper needed)
+            pool = ProcessingPool(nodes=self.max_cores)
+            res = pool.map(lambda args: self.estimate_leaky_average(args[0], tau=args[1]), args_list)
+        else:
+            # Sequential processing fallback
+            res = [self.estimate_leaky_average(x[None, ...], tau) for x in X]
+
+        # Return results in requested format
+        if return_format == 'raw':
+            return res
+        elif return_format == 'arrays':
+            # Process results into standard array format
+            z_slid = np.array([r[0][0, :] if r[0].ndim > 1 else r[0] for r in res])
+            logp = np.array([r[1][0, :] if r[1].ndim > 1 else r[1] for r in res])
+            cump = np.array([r[2][0, :] if r[2].ndim > 1 else r[2] for r in res])
+            return z_slid, logp, cump
+        else:
+            raise ValueError(f"Unknown return_format: {return_format}")
+
     def estimate_leaky_average_parallel(self, X, tau=None):
         """Call estimate_leaky_average with multiprocessing pool wrapper"""
 
-        parallel_function = functools.partial(self.estimate_leaky_average)
-        with multiprocessing.Pool() as pool: # multiprocessing.Pool()
-           res = pool.starmap(parallel_function, [(x[None, ...], tau) for x in X])
-
-        # res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
-
-        temp = res
-        
-        z_slid    = np.array([r[0][0, :] for r in temp])
-        logp    = np.array([r[1][0, :] for r in temp])
-        cump = np.array([r[2][0, :] for r in temp])
-        
-        return(z_slid, logp, cump)
+        return self._run_parallel_leaky_average(X, tau, return_format='arrays')
 
     def fit_best_tau(self, n_trials=5000, n_train_instances=500):
         """Finds the integration time constant tau minimising prediction error for the current
@@ -782,12 +808,7 @@ class GenerativeModel():
         X = self.generate_batch(n_trials, n_train_instances)[0][:, :, 0]
 
         def fn(tau):
-            if self.max_cores is None or self.max_cores > 1:
-                pool = ProcessingPool(nodes=self.max_cores)
-                res = pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
-                # res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, ...], tau) for x in X])
-            else:
-                res = [self.estimate_leaky_average(x[None, ...], tau) for x in X]
+            res = self._run_parallel_leaky_average(X, tau, return_format='raw')
             mse = np.mean([((r[0] - x)**2).mean() for r, x in zip(res, X)])
             return(mse)
 
@@ -799,13 +820,8 @@ class GenerativeModel():
             best_t = optimRes.x
         else:
             taus = np.arange(100, -1, -1)
-            if self.max_cores is None or self.max_cores > 1:
-                pool = ProcessingPool(nodes=self.max_cores)
-                res  = pool.map(self._estimate_leaky_average_call_, [(x, taus) for x in X])
-                # res  = self.pool.map(self._estimate_leaky_average_call_, [(x, taus) for x in X])
-            else:
-                res = [self.estimate_leaky_average(x, tau=taus) for x in X]         
-            
+            res = self._run_parallel_leaky_average(X, taus, return_format='raw')
+
             z_slid = np.array([r[0] for r in res])
             best_t = taus[((z_slid[:, 0, :] - X)**2).mean((0,1)).argmin()]
 
@@ -862,11 +878,7 @@ class GenerativeModel():
             X, Q, C = self.generate_batch(n_trials, n_instances)
 
             print(f'Estimating LI...', end=' ', flush=True)
-            res = self.pool.map(self._estimate_leaky_average_call_, [(x[None, :, 0], tau) for x in X]) # NOTE: probably to be replaced with x[None, ...] or even just x
-
-            z_slid    = np.array([r[0][0, :] for r in res])
-            p_slid    = np.array([r[1][0, :] for r in res])
-            cump_slid = np.array([r[2][0, :] for r in res])
+            z_slid, p_slid, cump_slid = self._run_parallel_leaky_average(X[:, :, 0], tau, return_format='arrays')
 
             F = np.linspace(0, 1, 1000)
             cums_cump_slid = np.array([(cump_slid <= f).sum(1)/n_trials for f in F])
