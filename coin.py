@@ -109,7 +109,6 @@ class GenerativeModel():
         self.rho_t   = self.pars['rho_t']
         self.max_cores = self.pars['max_cores']
 
-
     def export_pars(self):
         """Returns a dictionary with the current hyperparametrisation
 
@@ -168,6 +167,56 @@ class GenerativeModel():
         """
 
         return np.array(ss.truncnorm.rvs((a-mu)/si, (b-mu)/si, mu, si, N))
+
+    def _break_new_partition_(self, beta, gamma):
+        """Runs one stick-breaking step of the GEM distribution
+
+        Parameters
+        ----------
+        beta : list
+            Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
+             to the measure that has not yet been assigned
+
+        Returns
+        -------
+        beta: list
+           Partition of a stick of measure 1 with one more partition (len(beta) 
+           increased by one)
+        """
+
+        w = ss.beta.rvs(1, gamma) # Stick-breaking weight
+        beta.append((1-w) * beta[-1])
+        beta[-2] = w * beta[-2]
+        return beta
+
+    def _sample_customer_(self, beta, N, j, alpha, kappa=0):
+        """Samples one customer from a CRF-like discrete distribution with or without
+        a self-transition bias
+
+        Parameters
+        ----------
+        beta : list
+            Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
+             to the measure that has not yet been assigned
+        N    : 
+            Customer-table counts; N[j, :] corresponds to the counts for the current
+            restaurant j
+        j    :  
+            Current restaurant
+        kappa: 
+            Self-transition bias (set to 0 for a non-sticky process)
+
+
+        Returns
+        -------
+        beta: list
+           Partition of a stick of measure 1 with one more partition (len(beta) 
+           increased by one)
+        """
+        beta_w   = alpha * np.array(beta)
+        sticky_w = 0 if kappa == 0 else kappa * np.eye(len(beta))[j]
+        global_w = N[j, 0:len(beta)]
+        return random.choices(range(len(beta)), beta_w + sticky_w + global_w, k=1)[0]
 
     # Main data sampler
     def generate_batch(self, n_trials, batch_size=1):
@@ -372,33 +421,6 @@ class GenerativeModel():
         else:
             return states
 
-    def order_contexts(self, contexts):
-        """Reorders a list of contexts so that they appear in ascending order
-
-        Parameters
-        ----------
-        contexts : list of arrays
-            sequence of contexts 
-
-        Returns
-        -------
-        ordered_contexts : list of arrays
-            sequence of contexts ordered in ascending order
-        
-        """
-
-        c2c = dict()
-        ordered_contexts = np.zeros(self.n_trials, dtype=int)
-        next_c = 0
-
-        for t in range(len(contexts)):
-            if contexts[t] not in c2c.keys():
-                c2c[contexts[t]] = next_c
-                next_c += 1
-            ordered_contexts[t] = c2c[contexts[t]]
-
-        return list(ordered_contexts)
-
     def sample_contexts(self, seed=None, n_trials=None):
         """Samples a sequence of contexts by simulating a markov chain. Each call uses an 
         independent sample of pi_t and beta_t.
@@ -513,6 +535,7 @@ class GenerativeModel():
                       'gamma_q': 'gamma_cue',
                       'alpha_q': 'alpha_cue'}
 
+        # Build parameter list and values for COIN
         parlist, parvals = [], []
         for p in self.pars:
             if p in pmCoinDict.keys():
@@ -522,7 +545,98 @@ class GenerativeModel():
                 else:
                     parvals.append(self.pars[p])
 
-        z_coin, logp, cump, lamb, _, _ = runCOIN(y, parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
+        # Instantiate and configure COIN inference object
+        inf = coinp.COIN()
+
+        # Set coin inference parameters according to user passed parameters list and values
+        for i in range(len(parlist)):
+            setattr(inf, parlist[i], float(parvals[i]))
+
+        inf.store = ['predicted_probabilities', 'state_var', 'state_mean', 'drift', 'retention', 'average_state']
+        inf.particles = 100
+        inf.sigma_motor_noise = 0
+        inf.runs = nruns
+        inf.max_contexts = n_ctx
+        inf.max_cores = max_cores
+
+        # Determine if we have a single sequence or batch
+        y = np.asarray(y)
+        if y.ndim == 1:
+            # Single sequence case - add batch dimension
+            y = y[np.newaxis, :]
+            single_sequence = True
+        else:
+            single_sequence = False
+
+        # Process batch of sequences
+        mu, logp, cump, lamb = [], [], [], []
+
+        # Add progress bar for batch processing
+        batch_iterator = tqdm(range(y.shape[0])) if y.shape[0] > 1 else range(y.shape[0])
+
+        for b in batch_iterator:
+            y_b = np.squeeze(y[b])
+
+            # Set perturbations for this sequence
+            inf.perturbations = y_b
+
+            # Run COIN simulation
+            out = inf.simulate_coin()
+
+            # Initialize output arrays for this sequence
+            mu_runs = np.zeros((len(y_b), nruns))
+            logp_runs = np.zeros((len(y_b), nruns))
+            lamb_runs = np.zeros((inf.max_contexts + 1, len(y_b), nruns))
+            cump_runs = []
+
+            # Process results from all runs
+            for i in range(nruns):
+                mu_parts = out["runs"][i]["state_mean"]
+                sigma_parts = np.sqrt(out["runs"][i]["state_var"] + inf.sigma_sensory_noise**2)
+                lambda_parts = out["runs"][i]["predicted_probabilities"]
+
+                # Predicted observations
+                mu_runs[:, i] = np.reshape(np.mean(np.sum(lambda_parts * mu_parts, axis=0), axis=0), (1, len(y_b)))
+
+                # True observations
+                y_parts = np.tile(y_b, (mu_parts.shape[0], mu_parts.shape[1], 1))
+
+                # Probability (Gaussian likelihood function) of true y_i to be in the predictive distribution
+                p_y_parts = np.sum((lambda_parts / (np.sqrt(2 * np.pi) * sigma_parts)) *
+                                np.exp(-(y_parts - mu_parts)**2 / (2 * sigma_parts**2)), axis=0)
+
+                # Log probabilities for individual time points
+                logp_runs[:, i] = np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps))
+                lamb_runs[:, :, i] = np.reshape(np.mean(lambda_parts, axis=1), (lambda_parts.shape[0], len(y_b)))
+
+                # Cumulative distribution of the normal distribution
+                cump_runs.append(np.reshape(np.mean(np.sum(lambda_parts * 0.5 * (1 + scipy.special.erf((y_parts - mu_parts) / (np.sqrt(2)
+                                                        * sigma_parts))), axis=0), axis=0), (len(y_b), 1)))
+
+            # Aggregate results across runs
+            mu_b = np.mean(mu_runs, axis=1)
+            logp_b = np.max(logp_runs, axis=1) + np.log(np.sum(np.exp(logp_runs - np.max(logp_runs, axis=1)[:, np.newaxis]), axis=1)) - np.log(nruns)
+            lamb_b = np.mean(lamb_runs, axis=2)
+            cump_b = np.concatenate(cump_runs)
+
+            # Append to batch results
+            mu.append(mu_b)
+            logp.append(logp_b)
+            cump.append(cump_b)
+            lamb.append(lamb_b)
+
+        # Convert to arrays
+        z_coin = np.array(mu)
+        logp = np.array(logp)
+        cump = np.array(cump)
+        lamb = np.array(lamb)
+
+        # If input was a single sequence, remove the batch dimension
+        if single_sequence:
+            z_coin = z_coin[0]
+            logp = logp[0]
+            cump = cump[0]
+            lamb = lamb[0]
 
         return(z_coin, logp, cump, lamb)
 
@@ -698,8 +812,6 @@ class GenerativeModel():
         self.best_t = best_t
 
         return best_t
-
-    # Example plotting
 
     # Benchmarks
     def benchmark(self, n_trials=1000, n_instances=16, suffix=None, save=True):
@@ -916,56 +1028,6 @@ class GenerativeModel():
         return r
 
     # Auxiliary functions
-    def _break_new_partition_(self, beta, gamma):
-        """Runs one stick-breaking step of the GEM distribution
-
-        Parameters
-        ----------
-        beta : list
-            Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
-             to the measure that has not yet been assigned
-
-        Returns
-        -------
-        beta: list
-           Partition of a stick of measure 1 with one more partition (len(beta) 
-           increased by one)
-        """
-
-        w = ss.beta.rvs(1, gamma) # Stick-breaking weight
-        beta.append((1-w) * beta[-1])
-        beta[-2] = w * beta[-2]
-        return beta
-
-    def _sample_customer_(self, beta, N, j, alpha, kappa=0):
-        """Samples one customer from a CRF-like discrete distribution with or without
-        a self-transition bias
-
-        Parameters
-        ----------
-        beta : list
-            Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
-             to the measure that has not yet been assigned
-        N    : 
-            Customer-table counts; N[j, :] corresponds to the counts for the current
-            restaurant j
-        j    : 	
-            Current restaurant
-        kappa: 
-            Self-transition bias (set to 0 for a non-sticky process)
-
-
-        Returns
-        -------
-        beta: list
-           Partition of a stick of measure 1 with one more partition (len(beta) 
-           increased by one)
-        """
-        beta_w   = alpha * np.array(beta)
-        sticky_w = 0 if kappa == 0 else kappa * np.eye(len(beta))[j]
-        global_w = N[j, 0:len(beta)]
-        return random.choices(range(len(beta)), beta_w + sticky_w + global_w, k=1)[0]
-
 
 def load_pars(parset):
     """ Loads a set of COIN hyperparameters from a pre-specified label.
@@ -1039,137 +1101,3 @@ def load_pars(parset):
 
         return(pars)
 
-
-
-
-
-
-
-def instantiate_coin(parlist, parvals):
-    inf = coinp.COIN()
-    
-    # Set coin inference parameters according to user passed parameters list and values
-    for i in range(len(parlist)):
-        setattr(inf, parlist[i], float(parvals[i]))
-
-    inf.store = ['predicted_probabilities', 'state_var', 'state_mean', 'drift', 'retention', 'average_state']
-    inf.particles = 100
-    inf.sigma_motor_noise = 0
-    
-    return inf
-        
-
-def call_coin(y, parlist=[], parvals=[], nruns=10, n_ctx=10, max_cores=1):
-    y = np.squeeze(y)       
-    
-    inf = instantiate_coin(parlist, parvals)
-    
-    inf.runs = nruns
-    inf.max_contexts = n_ctx
-    inf.max_cores = max_cores
-
-    # inf.max_cores = nruns # NOTE: Translated from runCOIN.m but probably wrong in Matlab script 
-    inf.perturbations = y
-
-    out  = inf.simulate_coin()
-    mu   = np.zeros((len(y), nruns))
-    cump = []
-    # Original
-    # logp = np.zeros((nruns, 1))
-    # Suggested
-    logp = np.zeros((len(y), nruns))
-    lamb = np.zeros((inf.max_contexts + 1, len(y), nruns))
-    a    = np.zeros((inf.max_contexts + 1, len(y), nruns))
-    d    = np.zeros((inf.max_contexts + 1, len(y), nruns))
-    
-    # Average results over the nruns runs
-    for i in range(nruns): 
-        mu_parts = out["runs"][i]["state_mean"]
-        sigma_parts = np.sqrt(out["runs"][i]["state_var"] + inf.sigma_sensory_noise**2)
-        lambda_parts = out["runs"][i]["predicted_probabilities"] # Predicted probabilities of contexts, shape: (max_contexts, self.particles, n_trials) (max_contexts = 10+1, self.particles = 100)
-        
-        # Predicted observations
-        mu[:, i] = np.reshape(np.mean(np.sum(lambda_parts * mu_parts, axis=0), axis=0), (1, len(y)))
-        
-        # True observations
-        y_parts = np.tile(y, (mu_parts.shape[0], mu_parts.shape[1], 1))
-        
-        # Probability (Gaussian likelihood function)  of true y_i to be in the predictive (normal) distribution of the states
-        p_y_parts = np.sum((lambda_parts / (np.sqrt(2 * np.pi) * sigma_parts)) * 
-                        np.exp(-(y_parts - mu_parts)**2 / (2 * sigma_parts**2)), axis=0) # summed over particles?
-        
-        # Overal logp value across n_trials, original formulation:
-        # logp[i] = np.mean(np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps))) # First, average over particles, then multiply (i.e., sum the logs) over trials ---> so sum, not mean
-        
-        # Suggestd formulation:
-        # logp[i] = np.sum(np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps))) # First, average over particles, then multiply (i.e., sum the logs) over trials ---> so sum, not mean
-        
-        # Preserving individual time point (trials) values:
-        logp[:, i] = np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps)) # First, average over particles, then multiply (i.e., sum the logs) over trials ---> so sum, not mean
-        lamb[:, :, i] = np.reshape(np.mean(lambda_parts, axis=1), (lambda_parts.shape[0], len(y)))
-    
-        a[:, :, i] = np.reshape(np.mean(out["runs"][i]["retention"], axis=1), (lambda_parts.shape[0], len(y)))
-        d[:, :, i] = np.reshape(np.mean(out["runs"][i]["drift"], axis=1), (lambda_parts.shape[0], len(y)))
-        
-        # Cumulative distribution of the normal distribution
-        cump.append(np.reshape(np.mean(np.sum(lambda_parts * 0.5 * (1 + scipy.special.erf((y_parts - mu_parts) / (np.sqrt(2)
-                                                * sigma_parts))), axis=0), axis=0), (len(y), 1)))
-        
-    
-    mu_ = np.mean(mu, axis=1)
-    # Initially: only 1 value
-    # logp_ = np.max(logp) + np.log(np.sum(np.exp(logp - np.max(logp)))) - np.log(nruns)
-    # To obtain (n_trials, ) like for mu_:
-    logp_ = np.max(logp, axis=1) + np.log(np.sum(np.exp(logp - np.max(logp, axis=1)[:, np.newaxis]), axis=1)) - np.log(nruns)
-    lamb_ = np.mean(lamb, axis=2)
-    a_ = np.mean(a, axis=2)
-    d_ = np.mean(d, axis=2)
-    
-    cump_ = np.concatenate(cump)
-
-    return mu_, logp_, cump_, lamb_, a_, d_
-
-
-def runCOIN(y, parlist, parvals, nruns=10, n_ctx=10, max_cores=1):
-    """_summary_
-
-    Args:
-        y (_type_): state observations
-        parlist (_type_): _description_
-        parvals (_type_): _description_
-
-
-    Returns:
-        mu (z_coin) : np.array
-            predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y
-        logp   : np.array
-            log-probabilities of the input sequence y_t under the COIN posterior distribution; same
-            dimensional arrangement as y
-        cump   : np.array
-            cumulative probabilities of the input sequence y_t under the COIN posterior 
-            distribution; same dimensional arrangement as y. Useful to measure calibration.
-        lamb   : np.array
-            responsibilities lambda^c_t for each context c and time-step t. dim 0 runs across 
-            batches, dim 1 across time points, dim 2 across contexts (dimension equals the maximum
-            number of contexts of the COIN model, currently set to 10+1)
-    """
-
-    mu, logp, cump, lamb, a, d = [], [], [], [], [], []
-    
-    for b in tqdm(range(y.shape[0])):
-        mu_b, logp_b, cump_b, lamb_b, a_b, d_b = call_coin(y[b, :], parlist, parvals, nruns=nruns, n_ctx=n_ctx, max_cores=max_cores)
-        mu.append(mu_b)
-        logp.append(logp_b)
-        cump.append(cump_b)
-        lamb.append(lamb_b)
-        a.append(a_b)
-        d.append(d_b)
-
-    mu = np.array(mu)
-    logp = np.array(logp)
-    cump = np.array(cump)
-    lamb = np.array(lamb)
-    a = np.array(a)
-    d = np.array(d)
-    
-    return mu, logp, cump, lamb, a, d
