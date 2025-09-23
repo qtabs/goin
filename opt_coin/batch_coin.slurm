@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --qos=xlong
 #SBATCH --job-name=coin_comp
-#SBATCH --nodes=1              # nodes per instance
-#SBATCH --ntasks=1            # tasks per instance
+#SBATCH --nodes=48              # nodes per instance
+#SBATCH --ntasks=4            # tasks per instance
 #SBATCH --cpus-per-task=8
 #SBATCH --output=/scratch/clevyfidel/Workspace/goin/opt_coin/outputs_terminal/test_opt_coin_%j.out
 #SBATCH --error=/scratch/clevyfidel/Workspace/goin/opt_coin/outputs_terminal/test_opt_coin_%j.err
@@ -34,7 +34,7 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/scicomp/builds/Rocky/8.7/Common/softwar
 #/scratch/clevyfidel/conda_env/coin/bin/python -m pip install matlabengine==24.2.1
 
 
-OUTPUT="inference_results_512_mse_parallel"
+OUTPUT="inference_results_512_moreconfigs_parallel"
 N_SAMPLES=512
 N_TRIALS=512
 
