@@ -1,24 +1,31 @@
-import random
-import numpy as np
-import scipy.stats as ss
-import scipy.special
-import matplotlib.pyplot as plt
-import matplotlib.colors
-import glob
-import os.path
-import csv
-# import matlab.engine
-import scipy.optimize
-import seaborn as sns
-import copy
-import pickle
-import time
-from pathos.multiprocessing import ProcessingPool
 import collections.abc
-from icecream import ic
-# from mycolorpy import colorlist as mcp
+import copy
+import csv
+import functools
+import glob
 import matplotlib.cm as cm
+import matplotlib.colors
+import matplotlib.pyplot as plt
+import multiprocessing
+import numpy as np
+import os.path
+# import matlab.engine
 import pathlib
+import pickle
+import random
+import scipy.optimize
+import scipy.special
+import scipy.stats as ss
+import seaborn as sns
+import sys
+import time
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import COIN_Python.coin as coinp
+
+from icecream import ic
+from pathos.multiprocessing import ProcessingPool
+from tqdm import tqdm
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -113,7 +120,7 @@ class GenerativeModel():
 
     def __init__(self, parset):
 
-        # self.pool = ProcessingPool()
+        self.pool = ProcessingPool()
 
         if type(parset) is str:
             self.pars   = load_pars(parset)
@@ -132,8 +139,7 @@ class GenerativeModel():
         self.alpha_t = self.pars['alpha_t']
         self.alpha_q = self.pars['alpha_q']
         self.rho_t   = self.pars['rho_t']
-
-        self.max_cores=self.pars['max_cores']
+        self.max_cores = self.pars['max_cores']
 
 
     def export_pars(self):
@@ -426,7 +432,8 @@ class GenerativeModel():
         return list(ordered_contexts)
 
     # Coin estimation
-    def estimate_coin(self, y, mode="matlab", eng=None, nruns=1, n_ctx=10, max_cores=1):
+
+    def estimate_coin(self, y, mode="python", eng=None, nruns=1, n_ctx=10, max_cores=1):
         """Runs the COIN inference algorithm on a batch of observations
         Requires MATLAB and the COIN inference implementation (https://github.com/jamesheald/COIN)
         OR the Python version
@@ -736,7 +743,6 @@ class GenerativeModel():
         
         return(z_slid, logp, cump)
 
-
     def fit_best_tau(self, n_trials=5000, n_train_instances=500):
         """Finds the integration time constant tau minimising prediction error for the current
         hyperparametrisation and number of trials.
@@ -840,7 +846,8 @@ class GenerativeModel():
         fig2.savefig(f'samples-pi{"-{suffix}" if suffix is not None else ""}.png')
 
     # Benchmarks
-    def benchmark(self, n_trials=1000, n_instances=256, suffix=None, eng=None, save=True):
+
+    def benchmark(self, n_trials=1000, n_instances=16, suffix=None, eng=None, save=True):
         """Performs a thorough benchmarking of the generative model for the given number of trials. 
         The function stores the benchmarks in a pickle for easy retrieval and only performs the
         computations if the pickle file does not exist.
@@ -909,7 +916,8 @@ class GenerativeModel():
                     LI_ct_ce[b] += np.log(e_beta[ctx]) * (C[b, :, 0] == ctx).mean()
 
             print(f'Estimating coin...', flush=True)
-            z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng)
+
+            z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, eng, n_contexts=64)
             loglamb = np.log(lamb + np.exp(minloglik))
 
             coin_mse = ((z_coin - X[..., 0])**2).mean(1)
