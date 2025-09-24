@@ -23,67 +23,22 @@ import COIN_Python.coin as coinp
 
 class GenerativeModel():
     """
-    Core COIN Generative Model class for context-dependent inference.
+    COIN Generative Model for context-dependent inference.
 
-    Attributes
+    Generates synthetic time series data using a hierarchical Bayesian framework
+    where observations depend on latent contexts that evolve via Chinese Restaurant Process.
+
+    Parameters
     ----------
     parset : str or dict
-        as str it identifies a hyperparametrisation compatible with load_pars()
-        as dict it should have fields:
-            parset['name']: name to identify the hyperparametrisation
-            parset['pars']: dict with each of the hyperparameters of the generative model
+        Hyperparameter set name ('fitted', 'validation', 'training', etc.) or
+        dict with 'name' and 'pars' fields containing hyperparameter values.
 
-    Methods
-    -------
-    export_pars()
-        Returns a dictionary with the current hyperparametrisation
-
-    generate_batch(n_trials, batch_size)
-        Generates a batch of data; each batch corresponds to a different realisation of the COIN
-        generative model; i.e., same hyperparameters but different parameters
-
-    generate_context_batch(n_trials, batch_size)
-        Generates a batch of context sequences; when used with the explicit implementation also
-        returns the ground truth transition probability matrix and global distribution of contexts
-
-    generate_session(seed, n_trials)
-        Generates a single data sequence, optionally with a user-specified random seed
-
-    sample_observations(contexts, states)
-        Generates a single data sequence y_t given a sequence of contexts c_t a sequence of
-        states x_t^c
-
-    sample_states(contexts)
-        Generates state dynamics x_t^c given a sequence of contexts
-
-    estimate_coin(y, nruns, n_ctx, max_cores)
-        Runs the COIN inference algorithm using Python implementation and returns the predictions
-        for the observations hat{y}_t, the log-probabilities of the actual input sequence y_t,
-        the cumulative probabilities of y_t, and the responsibilities of the contexts lambda^c_t
-
-    estimate_leaky_average(y, tau)
-        Runs a leaky integrator with integration time constant tau to generate predictions for the
-        observations hat{y}_t on the input sequence y_t. Returns the predictions for the
-        observations hat{y}_t, the log-probabilities of the actual input sequence y_t, and the
-        cumulative probabilities of y_t, and tau. If tau is not specified it estimates the best
-        value for the current hyperparametrisation.
-
-    fit_best_tau(n_trials)
-        Finds the integration time constant tau minimising prediction error for the current
-        hyperparametrisation and number of trials.
-
-    benchmark(n_trials, n_instances, suffix, save)
-        Performs a thorough benchmarking of the generative model for the given number of trials.
-        It returns a dictionary indicating the performance of the COIN generative model and an
-        optimal leaky integrator, and the context and observation sequences used to generate
-        the benchmarks. The function stores the benchmarks in a pickle for easy retrieval and only
-        performs the computations if the pickle file does not exist.
-
-    measure_ctx_transition_stats(n_trials)
-        Measures the empirical number of visited contexts, context transition probability matrix,
-        and context global probabilities for sequences with n_trials timepoints and the current
-        hyperparametrisation.
-
+    Main Methods
+    ------------
+    Data Generation: generate_batch(), generate_session(), sample_*()
+    Inference: estimate_coin(), estimate_leaky_average()
+    Analysis: benchmark(), measure_ctx_transition_stats()
     """
 
     def __init__(self, parset):
@@ -111,64 +66,17 @@ class GenerativeModel():
 
     # Auxiliary samplers
     def _sample_N_(self, mu, si, N=1):
-        """Samples from a normal distribution
-
-        Parameters
-        ----------
-        mu : float
-            Mean of the normal distribution
-        si : float
-            Standard deviation of the normal distribution
-        N  : int (optional)
-            Number of samples
-
-        Returns
-        -------
-        np.array
-           samples
-        """
+        """Sample N values from normal distribution N(mu, si)."""
 
         return np.array(ss.norm.rvs(mu, si, N))
 
     def _sample_TN_(self, a, b, mu, si, N):
-        """Samples from a truncated normal distribution
-
-        Parameters
-        ----------
-        a  : float
-            low truncation point
-        b  : float
-            high truncation point
-        mu : float
-            Mean of the normal distribution before truncation (i.e, location)
-        si : float
-            Standard deviation of the normal distribution before truncation (i.e, size)
-        N  : int (optional)
-            Number of samples
-
-        Returns
-        -------
-        np.array
-           samples
-        """
+        """Sample N values from truncated normal distribution on [a,b]."""
 
         return np.array(ss.truncnorm.rvs((a-mu)/si, (b-mu)/si, mu, si, N))
 
     def _break_new_partition_(self, beta, gamma):
-        """Runs one stick-breaking step of the GEM distribution
-
-        Parameters
-        ----------
-        beta : list
-            Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
-             to the measure that has not yet been assigned
-
-        Returns
-        -------
-        beta: list
-           Partition of a stick of measure 1 with one more partition (len(beta) 
-           increased by one)
-        """
+        """Stick-breaking step for GEM distribution - adds new partition to beta."""
 
         w = ss.beta.rvs(1, gamma) # Stick-breaking weight
         beta.append((1-w) * beta[-1])
@@ -176,29 +84,7 @@ class GenerativeModel():
         return beta
 
     def _sample_customer_(self, beta, N, j, alpha, kappa=0):
-        """Samples one customer from a CRF-like discrete distribution with or without
-        a self-transition bias
-
-        Parameters
-        ----------
-        beta : list
-            Partition of a stick of measure 1 (sum(beta) = 1); last item corresponds
-             to the measure that has not yet been assigned
-        N    : 
-            Customer-table counts; N[j, :] corresponds to the counts for the current
-            restaurant j
-        j    :  
-            Current restaurant
-        kappa: 
-            Self-transition bias (set to 0 for a non-sticky process)
-
-
-        Returns
-        -------
-        beta: list
-           Partition of a stick of measure 1 with one more partition (len(beta) 
-           increased by one)
-        """
+        """Sample table assignment for customer j in Chinese Restaurant Process."""
         beta_w   = alpha * np.array(beta)
         sticky_w = 0 if kappa == 0 else kappa * np.eye(len(beta))[j]
         global_w = N[j, 0:len(beta)]
@@ -206,41 +92,21 @@ class GenerativeModel():
 
     # Main data sampler
     def generate_batch(self, n_trials, batch_size=1):
-        """Generates a batch of data sampled from the generative model
+        """Generate batch of synthetic data.
 
-        Parameters
-        ----------
-        n_trials   : int
-            number of time points (i.e., trials in the COIN jargon)
-        batch_size : int
-            number of batches
-
-        Returns
-        -------
-        y  : np.array
-            sequence of state observations; shape (n_batches, n_trials)
-        q  : np.array
-            sequence of cues; shape (n_batches, n_trials). Cue emissions are untested.
-        c  : np.array
-            sequence of sampled contexts; shape (n_batches, n_trials).
+        Parameters: n_trials (int), batch_size (int)
+        Returns: y, q, c arrays with shape (n_batches, n_trials)
         """
 
-        self.n_trials = n_trials # hack to avoid passing multiple parameters to pool.map
+        self.n_trials = n_trials
 
-        # Next line ensures all instances are sampled with different seeds
         seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
         
         if self.max_cores is None or self.max_cores > 1:
             pool = ProcessingPool(nodes=self.max_cores)
             res = pool.map(self.generate_session, seeds)
-            # res = self.pool.map(self.generate_session, seeds)
         else:
             res = [self.generate_session(seed) for seed in seeds]
-
-        # parallel_generate_session = functools.partial(self.generate_session)
-        # with multiprocessing.Pool() as pool:
-        #     res = pool.map(parallel_generate_session, seeds)
-
 
         y = np.concatenate([r[0] for r in res], axis=0)
         q = np.concatenate([r[1] for r in res], axis=0)
@@ -251,25 +117,12 @@ class GenerativeModel():
         return(y, q, c)
 
     def generate_context_batch(self, n_trials, batch_size=1):
-        """Generates a batch of context sequences;
+        """Generate batch of context sequences.
 
-        Parameters
-        ----------
-        n_trials   : int
-            number of time points (i.e., trials in the COIN jargon)
-        batch_size : int
-            number of batches
-
-        Returns
-        -------
-        dict
-            Field 'C' contains an np.array with the sequences of sampled contexts; shape (n_batches, n_trials)
-            When used with the explicit implementation also returns:
-            Field 'pi': the ground truth transition probability matrix
-            Field 'beta': the ground truth global distribution of contexts
+        Returns dict with 'C' field containing contexts (n_batches, n_trials).
+        May include 'pi' and 'beta' fields for ground truth statistics.
         """
 
-        # See generate_batch for an explanation of the next two lines
         self.n_trials = n_trials
         seeds = np.random.randint(low=1, high=1024*16, size=(batch_size)).cumsum()
 
@@ -297,23 +150,10 @@ class GenerativeModel():
         return batch
 
     def generate_session(self, seed=None, n_trials=None):
-        """Generates a single data sequence, optionally with a user-specified random seed;
+        """Generate single data sequence.
 
-        Parameters
-        ----------
-        seed : int (optional)
-            random seed for the generation of the sequence (useful for parallelisation)
-        n_trials : int
-            number of time points (i.e., trials in the COIN jargon)
-
-        Returns
-        -------
-        y  : np.array
-            sequence of observations; shape (1, n_trials)
-        q  : np.array
-            sequence of cues; shape (1, n_trials). Cue emissions are untested.
-        c  : np.array
-            sequence of sampled contexts; shape (1, n_trials).
+        Parameters: seed (int, optional), n_trials (int)
+        Returns: y, q, c arrays with shape (1, n_trials)
         """
 
         if n_trials is not None:
@@ -340,21 +180,9 @@ class GenerativeModel():
         return(y, q, c)
 
     def sample_observations(self, contexts, states):
-        """Generates a single data sequence y_t given a sequence of contexts c_t and a sequence of 
-        states x_t^c
+        """Generate observations y_t from contexts and states.
 
-        Parameters
-        ----------
-        contexts : integer np.array
-            one-dimensional sequence of contexts 
-        states : dict
-            dictionary encoding the latent state values (one-dimensional np.array) for each 
-            context c (keys).
-
-        Returns
-        -------
-        y  : np.array
-            sequence of observations; shape (1, n_trials)
+        Returns: observations (1, n_trials)
         """
 
         y = np.zeros((1, len(contexts)))
@@ -366,25 +194,9 @@ class GenerativeModel():
         return y
 
     def sample_states(self, contexts, return_pars=False):
-        """Generates a single data sequence y_t given a sequence of contexts c_t a sequence of 
-        states x_t^c
+        """Generate latent states for each context using AR(1) dynamics.
 
-        Parameters
-        ----------
-        contexts : integer np.array
-            one-dimensional sequence of contexts 
-        return_pars: bool
-            also returns the retention and drift parameters for each context
-
-
-        Returns
-        -------
-        states : dict
-            dictionary encoding the latent state values (one-dimensional np.array) for each 
-            context c (keys).
-        a: retention parameters for each context (only if return_pars set to True)
-        d: drift parameters for each context (only if return_pars set to True)
-
+        Returns: states dict, optionally (a, d) if return_pars=True
         """
 
         # Note that retention and drift are sampled in every call
@@ -405,21 +217,9 @@ class GenerativeModel():
             return states
 
     def sample_contexts(self, seed=None, n_trials=None):
-        """Samples a sequence of contexts by simulating a markov chain. Each call uses an 
-        independent sample of pi_t and beta_t.
+        """Sample context sequence via Markov chain simulation.
 
-        Parameters
-        ----------
-        seed : int (optional)
-            random seed for the generation of the sequence (useful for parallelisation)
-        n_trials : int
-            number of time points (i.e., trials in the COIN jargon). If not specified, n_trials 
-            is readout from self.n_trials
-
-        Returns.
-        -------
-        contexts : list or integers
-            sequence of sampled contexts
+        Returns: list of context integers
         """
 
         if seed is not None:
@@ -445,18 +245,9 @@ class GenerativeModel():
         return contexts
 
     def sample_cues(self, contexts):
-        """Samples a sequence of cues. Each call uses an independent sample of pi_q and beta_q.
-        Cue emission has not been thoroughly tested
+        """Sample cue sequence given contexts. Cue emission is untested.
 
-        Parameters
-        ----------
-        contexts : list of integers
-            sequence of sampled contexts; dim 0 runs across time points, dim 1 is set to one
-
-        Returns
-        -------
-        cues : list of integers
-            sequence of emitted cues
+        Returns: list of cue integers
         """
 
         N = np.zeros((max(contexts) + 1, 10)) # total N context ~ cue pairs
@@ -476,33 +267,10 @@ class GenerativeModel():
 
     # Coin estimation
     def estimate_coin(self, y, nruns=1, n_ctx=10, max_cores=1):
-        """Runs the COIN inference algorithm on a batch of observations using the Python implementation
+        """Run COIN inference algorithm.
 
-        Parameters
-        ----------
-        y   : np.array
-            sequence of observations; shape (n_batches, n_trials)
-        nruns : int, optional
-            number of COIN runs (default: 1)
-        n_ctx : int, optional
-            maximum number of contexts (default: 10)
-        max_cores : int, optional
-            maximum number of cores for parallel processing (default: 1)
-
-        Returns
-        -------
-        z_coin : np.array
-            predictions hat{y}_t for the observations y_{1:t-1}; shape (n_batches, n_trials)
-        logp   : np.array
-            log-probabilities of the input sequence y_t under the COIN posterior distribution; shape (n_batches, n_trials)
-        cump   : np.array
-            cumulative probabilities of the input sequence y_t under the COIN posterior
-            distribution; shape (n_batches, n_trials). Useful to measure calibration.
-        lamb   : np.array
-            responsibilities lambda^c_t for each context c and time-step t. dim 0 runs across
-            batches, dim 2 across time points, dim 1 across contexts (dimension equals the maximum
-            number of contexts of the COIN model, currently set to 10+1)
-
+        Parameters: y (n_batches, n_trials), nruns, n_ctx, max_cores
+        Returns: z_coin, logp, cump (n_batches, n_trials), lamb (n_batches, n_ctx, n_trials)
         """
 
         # Translation to the naming of the hyperparameters in the COIN inference algorithm
@@ -609,18 +377,7 @@ class GenerativeModel():
 
     # Baselines and heuristic estimations
     def empirical_expected_beta(self, n_contexts=11, n_trials=1000, n_samples=1000):
-        """Computes the empirical expected value for the global distribution of contexts.
-
-        Parameters
-        ----------
-        n_contexts : int (optional)
-            Maximum number of contexts considered
-
-        Returns
-        -------
-        e_beta : np.array
-            E[beta] distribution up to item n_contexts (note that e_beta.sum()<1)
-        """
+        """Compute empirical expected global distribution of contexts."""
         c_series  = self.generate_context_batch(n_trials, n_samples)['C']
 
         # Empirical distribution of contexts in each sample
@@ -635,28 +392,10 @@ class GenerativeModel():
         return glob_dist
 
     def estimate_leaky_average(self, y, tau=None, force_sequential=False):
-        """Runs a leaky integrator with integration time constant tau to generate predictions for
-        the observations hat{y}_t on the input sequence y_{1:t-1}.
+        """Run leaky integrator baseline.
 
-        Parameters
-        ----------
-        y   : np.array
-            sequence of observations; shape (n_batches, n_trials)
-        tau : (optional) float or np.array
-            (set of) integration time constant(s). If not specified, it's set to the optimal value
-            for the current hyperparametrisation.
-        force_sequential : bool, optional
-            If True, force sequential processing even for batch inputs (default: False)
-
-        Returns
-        -------
-        z_slid : np.array
-            predictions hat{y}_t for the observations y_{1:t-1}; shape (n_batches, n_trials)
-        logp   : np.array
-            log-probabilities of the input sequence y_t; shape (n_batches, n_trials)
-        cump   : np.array
-            cumulative probabilities of the input sequence y_t; shape (n_batches, n_trials). Useful to measure calibration.
-
+        Parameters: y (n_batches, n_trials), tau (optional), force_sequential
+        Returns: z_slid, logp, cump (n_batches, n_trials)
         """
         y = np.asarray(y)
 
@@ -715,21 +454,7 @@ class GenerativeModel():
             return z_slid, logp, cump
 
     def fit_best_tau(self, n_trials=5000, n_train_instances=500):
-        """Finds the integration time constant tau minimising prediction error for the current
-        hyperparametrisation and number of trials.
-
-        Parameters
-        ----------
-        n_trials : int
-            number of time points (i.e., trials in the COIN jargon)
-        n_train_instances : (optional) int
-            number of instances to use for the estimation
-
-        Returns
-        -------
-        best_t : float
-            optimal integration time constant tau
-        """
+        """Find optimal tau for leaky integrator by minimizing prediction error."""
 
         X = self.generate_batch(n_trials, n_train_instances)[0]
 
@@ -987,29 +712,30 @@ def load_pars(parset):
     """
 
     if type(parset) is str:
+        # Note: Some parameters use default COIN implementation values (marked with *)
         pars = {}
         if parset == 'fitted': # Average of evoked+spontaneous across subjects = implementation
             pars['alpha_t'] = 9.0
-            pars['gamma_t'] = 0.1    # Not reported; set to coin's implementation
+            pars['gamma_t'] = 0.1    # *
             pars['rho_t']   = 0.25
-            pars['alpha_q'] = 25.0   # Not fitted; set to COIN implementation
-            pars['gamma_q'] = 0.1    # Not fitted; set to COIN implementation
+            pars['alpha_q'] = 25.0   # *
+            pars['gamma_q'] = 0.1    # *
             pars['mu_a']    = 0.9425
             pars['si_a']    = 0.0012
             pars['si_d']    = 0.0008
             pars['si_q']    = 0.0089
-            pars['si_r']    = 0.03   # Not reported; set to coin's implementation
+            pars['si_r']    = 0.03   # *
         elif parset == 'validation':
             pars['alpha_t'] = 10.0
-            pars['gamma_t'] = 0.1    # Not reported; set to coin's implementation
+            pars['gamma_t'] = 0.1    # *
             pars['rho_t']   = 0.9
             pars['alpha_q'] = 10.
-            pars['gamma_q'] = 0.1    # Not reported; set to coin's implementation
+            pars['gamma_q'] = 0.1    # *
             pars['mu_a']    = 0.9
             pars['si_a']    = 0.1
             pars['si_d']    = 0.1
             pars['si_q']    = 0.1
-            pars['si_r']    = 0.03   # Not reported; set to coin's implementation
+            pars['si_r']    = 0.03   # *
         elif parset == 'training':
             pars = load_pars('validation')
             pars['gamma_t'] = 0.2
