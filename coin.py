@@ -109,20 +109,6 @@ class GenerativeModel():
         self.rho_t   = self.pars['rho_t']
         self.max_cores = self.pars['max_cores']
 
-    def export_pars(self):
-        """Returns a dictionary with the current hyperparametrisation
-
-        Returns
-        -------
-        dict
-           dict with each of the hyperparameters of the generative model
-        """
-
-        F = ['si_q','si_r','mu_a','si_a','si_d','gamma_t','gamma_q','rho_t']
-        pars = dict([(field, getattr(self, field)) for field in F])
-
-        return pars
-
     # Auxiliary samplers
     def _sample_N_(self, mu, si, N=1):
         """Samples from a normal distribution
@@ -232,12 +218,11 @@ class GenerativeModel():
         Returns
         -------
         y  : np.array
-            sequence of state observations; dim 0 runs across batches, dim 1 across time points, dim 2 
-            is set to one for compatibility with pytorch
+            sequence of state observations; shape (n_batches, n_trials)
         q  : np.array
-            sequence of cues; same dimensional arrangement as y. Cue emissions are untested.
-        c  : np.array 
-            sequence of sampled contexts; same dimensional arrangement as y. 
+            sequence of cues; shape (n_batches, n_trials). Cue emissions are untested.
+        c  : np.array
+            sequence of sampled contexts; shape (n_batches, n_trials).
         """
 
         self.n_trials = n_trials # hack to avoid passing multiple parameters to pool.map
@@ -257,9 +242,9 @@ class GenerativeModel():
         #     res = pool.map(parallel_generate_session, seeds)
 
 
-        y = np.concatenate([r[0][None, ...] for r in res], axis=0)
-        q = np.concatenate([r[1][None, ...] for r in res], axis=0)
-        c = np.concatenate([r[2][None, ...] for r in res], axis=0)
+        y = np.concatenate([r[0] for r in res], axis=0)
+        q = np.concatenate([r[1] for r in res], axis=0)
+        c = np.concatenate([r[2] for r in res], axis=0)
 
         self.n_trials = None
 
@@ -278,8 +263,7 @@ class GenerativeModel():
         Returns
         -------
         dict
-            Field 'C' contains an np.array with the sequences of sampled contexts; same dimensional
-            arrangement as y in generate_batch
+            Field 'C' contains an np.array with the sequences of sampled contexts; shape (n_batches, n_trials)
             When used with the explicit implementation also returns:
             Field 'pi': the ground truth transition probability matrix
             Field 'beta': the ground truth global distribution of contexts
@@ -325,12 +309,11 @@ class GenerativeModel():
         Returns
         -------
         y  : np.array
-            sequence of observations; dim 0 runs across time points, dim 1 is set to one for
-            compatibility with pytorch
+            sequence of observations; shape (1, n_trials)
         q  : np.array
-            sequence of cues; same dimensional arrangement as y. Cue emissions are untested.
-        c  : np.array 
-            sequence of sampled contexts; same dimensional arrangement as y. 
+            sequence of cues; shape (1, n_trials). Cue emissions are untested.
+        c  : np.array
+            sequence of sampled contexts; shape (1, n_trials).
         """
 
         if n_trials is not None:
@@ -339,9 +322,9 @@ class GenerativeModel():
         if seed is not None:
             np.random.seed(seed)
 
-        c = np.zeros((self.n_trials, 1), int)
-        q = np.zeros((self.n_trials, 1), int)
-        y = np.zeros((self.n_trials, 1))
+        c = np.zeros((1, self.n_trials), int)
+        q = np.zeros((1, self.n_trials), int)
+        y = np.zeros((1, self.n_trials))
 
         contex_sample_results = self.sample_contexts()
         if type(contex_sample_results) is list:
@@ -350,9 +333,9 @@ class GenerativeModel():
             contexts = contex_sample_results[0]
         
         states   = self.sample_states(contexts)
-        y[:, 0]  = self.sample_observations(contexts, states)
-        q[:, 0]  = self.sample_cues(contexts)
-        c[:, 0]  = copy.deepcopy(contexts)
+        y[0, :]  = self.sample_observations(contexts, states)
+        q[0, :]  = self.sample_cues(contexts)
+        c[0, :]  = copy.deepcopy(contexts)
 
         return(y, q, c)
 
@@ -371,14 +354,14 @@ class GenerativeModel():
         Returns
         -------
         y  : np.array
-            one-dimensional sequence of observations
+            sequence of observations; shape (1, n_trials)
         """
 
-        y = np.zeros(len(contexts))
+        y = np.zeros((1, len(contexts)))
         v = self._sample_N_(0, self.si_r, len(contexts))
 
         for t, c in enumerate(contexts):
-            y[t] = states[c][t] + v[t]
+            y[0, t] = states[c][t] + v[t]
 
         return y
 
@@ -498,8 +481,7 @@ class GenerativeModel():
         Parameters
         ----------
         y   : np.array
-            sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is
-            set to one
+            sequence of observations; shape (n_batches, n_trials)
         nruns : int, optional
             number of COIN runs (default: 1)
         n_ctx : int, optional
@@ -510,12 +492,12 @@ class GenerativeModel():
         Returns
         -------
         z_coin : np.array
-            predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y (n_samples, n_trials)
+            predictions hat{y}_t for the observations y_{1:t-1}; shape (n_batches, n_trials)
         logp   : np.array
-            log-probabilities of the input sequence y_t under the COIN posterior distribution; shape = (n_samples, nruns)
+            log-probabilities of the input sequence y_t under the COIN posterior distribution; shape (n_batches, n_trials)
         cump   : np.array
             cumulative probabilities of the input sequence y_t under the COIN posterior
-            distribution; same dimensional arrangement as y. Useful to measure calibration.
+            distribution; shape (n_batches, n_trials). Useful to measure calibration.
         lamb   : np.array
             responsibilities lambda^c_t for each context c and time-step t. dim 0 runs across
             batches, dim 2 across time points, dim 1 across contexts (dimension equals the maximum
@@ -559,16 +541,8 @@ class GenerativeModel():
         inf.max_contexts = n_ctx
         inf.max_cores = max_cores
 
-        # Determine if we have a single sequence or batch
-        y = np.asarray(y)
-        if y.ndim == 1:
-            # Single sequence case - add batch dimension
-            y = y[np.newaxis, :]
-            single_sequence = True
-        else:
-            single_sequence = False
-
         # Process batch of sequences
+        y = np.asarray(y)
         mu, logp, cump, lamb = [], [], [], []
 
         # Add progress bar for batch processing
@@ -611,7 +585,7 @@ class GenerativeModel():
 
                 # Cumulative distribution of the normal distribution
                 cump_runs.append(np.reshape(np.mean(np.sum(lambda_parts * 0.5 * (1 + scipy.special.erf((y_parts - mu_parts) / (np.sqrt(2)
-                                                        * sigma_parts))), axis=0), axis=0), (len(y_b), 1)))
+                                                        * sigma_parts))), axis=0), axis=0), (len(y_b),)))
 
             # Aggregate results across runs
             mu_b = np.mean(mu_runs, axis=1)
@@ -631,35 +605,9 @@ class GenerativeModel():
         cump = np.array(cump)
         lamb = np.array(lamb)
 
-        # If input was a single sequence, remove the batch dimension
-        if single_sequence:
-            z_coin = z_coin[0]
-            logp = logp[0]
-            cump = cump[0]
-            lamb = lamb[0]
-
         return(z_coin, logp, cump, lamb)
 
-
     # Baselines and heuristic estimations
-    def theoretical_expected_beta(self, n_contexts=11):
-        """Computes the theoretical expected value for the global distribution assuming contexts
-        are sampled from distributions beta ~ GEM(gamma_t). This distribution only matches the 
-        global distribution of contexts for the explicit method.
-
-        Parameters
-        ----------
-        n_contexts : int (optional)
-            Maximum number of contexts considered
-
-        Returns
-        -------
-        e_beta : np.array
-            E[beta] distribution up to item n_contexts (note that e_beta.sum()<1)
-        """
-        e_beta = [((self.gamma_t)**j) / ((1+self.gamma_t)**(j+1)) for j in range(n_contexts)]
-        return np.array(e_beta)
-
     def empirical_expected_beta(self, n_contexts=11, n_trials=1000, n_samples=1000):
         """Computes the empirical expected value for the global distribution of contexts.
 
@@ -690,13 +638,10 @@ class GenerativeModel():
         """Runs a leaky integrator with integration time constant tau to generate predictions for
         the observations hat{y}_t on the input sequence y_{1:t-1}.
 
-        Automatically detects batch inputs and uses parallel processing when beneficial.
-
         Parameters
         ----------
         y   : np.array
-            sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 is
-            set to one. Can be single sequence or batch of sequences.
+            sequence of observations; shape (n_batches, n_trials)
         tau : (optional) float or np.array
             (set of) integration time constant(s). If not specified, it's set to the optimal value
             for the current hyperparametrisation.
@@ -706,41 +651,22 @@ class GenerativeModel():
         Returns
         -------
         z_slid : np.array
-            predictions hat{y}_t for the observations y_{1:t-1}; same dimensional arrangement as y (n_samples, n_trials)
+            predictions hat{y}_t for the observations y_{1:t-1}; shape (n_batches, n_trials)
         logp   : np.array
-            log-probabilities of the input sequence y_t; for compatibility with COIN inference, averaged across time-points hence of shape (n_samples, 1)
+            log-probabilities of the input sequence y_t; shape (n_batches, n_trials)
         cump   : np.array
-            cumulative probabilities of the input sequence y_t. Useful to measure calibration.
+            cumulative probabilities of the input sequence y_t; shape (n_batches, n_trials). Useful to measure calibration.
 
         """
-        # Ensure input is properly shaped
         y = np.asarray(y)
-
-        # Detect input format and normalize
-        if y.ndim == 1:
-            # Single sequence - add batch dimension
-            y_core = y[np.newaxis, :]
-            is_single_sequence = True
-        elif y.ndim == 2:
-            # Either batch of sequences or single sequence with last dim
-            y_core = y
-            is_single_sequence = False
-        elif y.ndim == 3 and y.shape[-1] == 1:
-            # Batch format with last dimension - remove it
-            y_core = y[..., 0]
-            is_single_sequence = False
-        else:
-            y_core = y
-            is_single_sequence = False
 
         if tau is None:
             if not hasattr(self, 'best_t'):
-                self.fit_best_tau(n_trials=y_core.shape[1])
+                self.fit_best_tau(n_trials=y.shape[1])
             tau = self.best_t
 
         # Detect if we should use parallel processing
-        is_batch = y_core.shape[0] > 1 and not is_single_sequence
-        use_parallel = (is_batch and
+        use_parallel = (y.shape[0] > 1 and
                        not force_sequential and
                        (self.max_cores is None or self.max_cores > 1))
 
@@ -772,7 +698,7 @@ class GenerativeModel():
 
         if use_parallel:
             # Use parallel processing for batch inputs
-            args_list = [(x[None, ...], tau) for x in y_core]
+            args_list = [(x[None, ...], tau) for x in y]
 
             pool = ProcessingPool(nodes=self.max_cores)
             res = pool.map(lambda args: compute_leaky_integrator(args[0], args[1]), args_list)
@@ -784,15 +710,8 @@ class GenerativeModel():
 
             return z_slid, logp, cump
         else:
-            # Use sequential processing for single sequences or when forced
-            z_slid, logp, cump = compute_leaky_integrator(y_core, tau)
-
-            # Remove batch dimension for single sequences
-            if is_single_sequence:
-                z_slid = z_slid[0] if z_slid.ndim > 1 else z_slid
-                logp = logp[0] if logp.ndim > 1 else logp
-                cump = cump[0] if cump.ndim > 1 else cump
-
+            # Use sequential processing
+            z_slid, logp, cump = compute_leaky_integrator(y, tau)
             return z_slid, logp, cump
 
     def fit_best_tau(self, n_trials=5000, n_train_instances=500):
@@ -812,7 +731,7 @@ class GenerativeModel():
             optimal integration time constant tau
         """
 
-        X = self.generate_batch(n_trials, n_train_instances)[0][:, :, 0]
+        X = self.generate_batch(n_trials, n_train_instances)[0]
 
         def fn(tau):
             z_slid, _, _ = self.estimate_leaky_average(X, tau)
@@ -884,34 +803,34 @@ class GenerativeModel():
             X, Q, C = self.generate_batch(n_trials, n_instances)
 
             print(f'Estimating LI...', end=' ', flush=True)
-            z_slid, p_slid, cump_slid = self.estimate_leaky_average(X[:, :, 0], tau)
+            z_slid, p_slid, cump_slid = self.estimate_leaky_average(X, tau)
 
             F = np.linspace(0, 1, 1000)
             cums_cump_slid = np.array([(cump_slid <= f).sum(1)/n_trials for f in F])
-            LI_mse = ((z_slid - X[..., 0])**2).mean(1)
+            LI_mse = ((z_slid - X)**2).mean(1)
             LI_kol = abs(cums_cump_slid - F[:, None]).max(0)
             LI_ce  = p_slid.mean(1) # Observations cross entropy
-            LI_ct_ac = (C[:, :, 0] == 0).mean(1) # LI assumed to predict always context 0 # Context identification accuracy
-            LI_ct_p  = (C[:, :, 0] == 0).mean(1) # Probability of the actual context on the posterior of the prediction
+            LI_ct_ac = (C == 0).mean(1) # LI assumed to predict always context 0 # Context identification accuracy
+            LI_ct_p  = (C == 0).mean(1) # Probability of the actual context on the posterior of the prediction
             # p_ctx not defined in LI --> we predict instead the empirical global distribution across c
             e_beta = self.empirical_expected_beta(n_trials=n_trials, n_samples=100*n_instances) 
             LI_ct_ce = np.zeros(C.shape[0])
             for b in range(C.shape[0]):
                 for ctx in range(len(e_beta)):
-                    LI_ct_ce[b] += np.log(e_beta[ctx]) * (C[b, :, 0] == ctx).mean()
+                    LI_ct_ce[b] += np.log(e_beta[ctx]) * (C[b, :] == ctx).mean()
 
             print(f'Estimating coin...', flush=True)
 
             z_coin, ll_coin, cump_coin, lamb = self.estimate_coin(X, n_ctx=64)
             loglamb = np.log(lamb + np.exp(minloglik))
 
-            coin_mse = ((z_coin - X[..., 0])**2).mean(1)
-            cums_cump_coin = np.array([(cump_coin[..., 0] <= f).sum(1)/cump_coin.shape[1] for f in F])
+            coin_mse = ((z_coin - X)**2).mean(1)
+            cums_cump_coin = np.array([(cump_coin <= f).sum(1)/cump_coin.shape[1] for f in F])
             coin_kol = abs(cums_cump_coin - F[:, np.newaxis]).max(0)
             coin_ce  = ll_coin.mean(1)
 
             c_hat = np.argmax(lamb, axis=1) # Predicted context
-            coin_ct_ac = (c_hat == C[..., 0]).mean(1) # Context identification accuracy
+            coin_ct_ac = (c_hat == C).mean(1) # Context identification accuracy
             coin_ct_p  = np.zeros(C.shape[0]) # Probability of the actual context on the posterior of the prediction
             coin_ct_ce = np.zeros(C.shape[0]) # Context cross-entropy
 
@@ -920,7 +839,7 @@ class GenerativeModel():
                 # For each context:
                 for ctx in range(lamb.shape[1]):
                     # Get timepoints where predicted context was correct (indices of hits)
-                    ctx_ix = np.where(C[b, :, 0] ==ctx)[0]
+                    ctx_ix = np.where(C[b, :] == ctx)[0]
                     # Compute cumulative probability over time points
                     coin_ct_p[b] += np.nansum(lamb[b, ctx, ctx_ix]) / C.shape[1]
                     loglambs = np.maximum(minloglik, np.log(lamb[b, ctx, ctx_ix]))
