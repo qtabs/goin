@@ -21,6 +21,318 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'COIN_Python')))
 import COIN_Python.coin as coinp
 
+class COINInference:
+    """COIN inference engine with integrated configuration for context-dependent time series analysis."""
+
+    def __init__(self, generative_params, particles=100, sigma_motor_noise=0.0, store_fields=None):
+        # Configuration
+        self.particles = particles
+        self.sigma_motor_noise = sigma_motor_noise
+        self.store_fields = store_fields or [
+            'predicted_probabilities', 'state_var', 'state_mean',
+            'drift', 'retention', 'average_state'
+        ]
+
+        # Parameters
+        self.params = generative_params
+        self._parameter_mapping = self._create_parameter_mapping()
+
+    def _create_parameter_mapping(self):
+        """Create mapping from internal to COIN algorithm parameters."""
+        return {
+            'si_q': 'sigma_process_noise',
+            'si_r': 'sigma_sensory_noise',
+            'mu_a': 'prior_mean_retention',
+            'si_a': 'prior_precision_retention',
+            'si_d': 'prior_precision_drift',
+            'gamma_t': 'gamma_context',
+            'alpha_t': 'alpha_context',
+            'rho_t': 'rho_context',
+            'gamma_q': 'gamma_cue',
+            'alpha_q': 'alpha_cue'
+        }
+
+    def _setup_coin_parameters(self):
+        """Convert internal parameters to COIN format with precision conversion."""
+        parlist, parvals = [], []
+        for param_name, param_value in self.params.items():
+            if param_name in self._parameter_mapping:
+                coin_name = self._parameter_mapping[param_name]
+                parlist.append(coin_name)
+
+                # Handle precision conversion for si_a and si_d
+                if param_name in ['si_a', 'si_d']:
+                    parvals.append(1 / (param_value ** 2))
+                else:
+                    parvals.append(param_value)
+        return parlist, parvals
+
+    def _configure_coin_object(self, nruns, n_ctx, max_cores):
+        """Create and configure COIN inference object."""
+        inf = coinp.COIN()
+
+        # Set parameters
+        parlist, parvals = self._setup_coin_parameters()
+        for name, value in zip(parlist, parvals):
+            setattr(inf, name, float(value))
+
+        # Set configuration
+        inf.store = self.store_fields
+        inf.particles = self.particles
+        inf.sigma_motor_noise = self.sigma_motor_noise
+        inf.runs = nruns
+        inf.max_contexts = n_ctx
+        inf.max_cores = max_cores
+
+        return inf
+
+    def _compute_gaussian_likelihood(self, lambda_parts, y_expanded, mu_parts, sigma_parts):
+        """Compute Gaussian likelihood for predictions."""
+        return np.sum(
+            (lambda_parts / (np.sqrt(2 * np.pi) * sigma_parts)) *
+            np.exp(-(y_expanded - mu_parts)**2 / (2 * sigma_parts**2)),
+            axis=0
+        )
+
+    def _compute_cumulative_distribution(self, lambda_parts, y_expanded, mu_parts, sigma_parts):
+        """Compute cumulative distribution function values."""
+        return np.reshape(
+            np.mean(
+                np.sum(
+                    lambda_parts * 0.5 * (1 + scipy.special.erf((y_expanded - mu_parts) / (np.sqrt(2) * sigma_parts))),
+                    axis=0
+                ),
+                axis=0
+            ),
+            (y_expanded.shape[2],)
+        )
+
+    def _compute_run_statistics(self, run_output, y_sequence, inf):
+        """Compute all statistics for a single COIN run."""
+        mu_parts = run_output["state_mean"]
+        sigma_parts = np.sqrt(run_output["state_var"] + inf.sigma_sensory_noise**2)
+        lambda_parts = run_output["predicted_probabilities"]
+
+        # Predicted observations
+        predictions = np.reshape(
+            np.mean(np.sum(lambda_parts * mu_parts, axis=0), axis=0),
+            (len(y_sequence),)
+        )
+
+        # Expand y for vectorized computation
+        y_expanded = np.tile(y_sequence, (mu_parts.shape[0], mu_parts.shape[1], 1))
+
+        # Compute likelihoods
+        p_y_parts = self._compute_gaussian_likelihood(lambda_parts, y_expanded, mu_parts, sigma_parts)
+        log_probs = np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps))
+
+        # Responsibilities
+        responsibilities = np.reshape(
+            np.mean(lambda_parts, axis=1),
+            (lambda_parts.shape[0], len(y_sequence))
+        )
+
+        # Cumulative probabilities
+        cumulative_probs = self._compute_cumulative_distribution(lambda_parts, y_expanded, mu_parts, sigma_parts)
+
+        return {
+            'predictions': predictions,
+            'log_probs': log_probs,
+            'responsibilities': responsibilities,
+            'cumulative_probs': cumulative_probs
+        }
+
+    def _aggregate_run_results(self, all_run_stats, nruns):
+        """Aggregate statistics across multiple runs."""
+        # Collect results from all runs
+        mu_runs = np.column_stack([stats['predictions'] for stats in all_run_stats])
+        logp_runs = np.column_stack([stats['log_probs'] for stats in all_run_stats])
+        lamb_runs = np.stack([stats['responsibilities'] for stats in all_run_stats], axis=2)
+        cump_runs = [stats['cumulative_probs'] for stats in all_run_stats]
+
+        # Aggregate
+        predictions = np.mean(mu_runs, axis=1)
+        log_probs = np.max(logp_runs, axis=1) + np.log(
+            np.sum(np.exp(logp_runs - np.max(logp_runs, axis=1)[:, np.newaxis]), axis=1)
+        ) - np.log(nruns)
+        responsibilities = np.mean(lamb_runs, axis=2)
+        cumulative_probs = np.concatenate(cump_runs)
+
+        return {
+            'predictions': predictions,
+            'log_probs': log_probs,
+            'responsibilities': responsibilities,
+            'cumulative_probs': cumulative_probs
+        }
+
+    def _process_single_sequence(self, y_sequence, inf, nruns):
+        """Process one sequence through COIN inference."""
+        inf.perturbations = y_sequence
+        output = inf.simulate_coin()
+
+        # Compute statistics for each run
+        run_statistics = []
+        for i in range(nruns):
+            stats = self._compute_run_statistics(output["runs"][i], y_sequence, inf)
+            run_statistics.append(stats)
+
+        # Aggregate across runs
+        return self._aggregate_run_results(run_statistics, nruns)
+
+    def _process_batch_sequences(self, y, inf, nruns):
+        """Process batch of sequences with progress tracking."""
+        batch_results = {'predictions': [], 'log_probs': [], 'responsibilities': [], 'cumulative_probs': []}
+
+        # Progress bar for batch processing
+        batch_iterator = tqdm(range(y.shape[0]), desc="COIN inference") if y.shape[0] > 1 else range(y.shape[0])
+
+        for b in batch_iterator:
+            y_sequence = np.squeeze(y[b])
+            sequence_results = self._process_single_sequence(y_sequence, inf, nruns)
+
+            # Collect results
+            for key in batch_results:
+                batch_results[key].append(sequence_results[key])
+
+        return batch_results
+
+    def _format_outputs(self, batch_results):
+        """Convert batch results to final output arrays."""
+        z_coin = np.array(batch_results['predictions'])
+        logp = np.array(batch_results['log_probs'])
+        cump = np.array(batch_results['cumulative_probs'])
+        lamb = np.array(batch_results['responsibilities'])
+
+        return z_coin, logp, cump, lamb
+
+    def _validate_inputs(self, y, nruns, n_ctx, max_cores):
+        """Validate inputs and raise informative errors."""
+        if not isinstance(y, np.ndarray):
+            raise TypeError("Input y must be a numpy array")
+        if y.ndim != 2:
+            raise ValueError("Input y must have shape (n_batches, n_trials)")
+        if nruns < 1:
+            raise ValueError("nruns must be >= 1")
+        if n_ctx < 1:
+            raise ValueError("n_ctx must be >= 1")
+        if max_cores < 1:
+            raise ValueError("max_cores must be >= 1")
+
+    def estimate(self, y, nruns=1, n_ctx=10, max_cores=1):
+        """Run COIN inference algorithm.
+
+        Parameters: y (n_batches, n_trials), nruns, n_ctx, max_cores
+        Returns: z_coin, logp, cump (n_batches, n_trials), lamb (n_batches, n_ctx, n_trials)
+        """
+        self._validate_inputs(y, nruns, n_ctx, max_cores)
+        inf = self._configure_coin_object(nruns, n_ctx, max_cores)
+        batch_results = self._process_batch_sequences(np.asarray(y), inf, nruns)
+        return self._format_outputs(batch_results)
+
+
+class LeakyAverageInference:
+    """Leaky integrator inference engine with integrated configuration and optimization."""
+
+    def __init__(self, generative_model, max_cores=None):
+        self.generative_model = generative_model
+        self.max_cores = max_cores
+        self.best_tau = None
+
+    def estimate(self, y, tau=None, force_sequential=False):
+        """Run leaky integrator baseline.
+
+        Parameters: y (n_batches, n_trials), tau (optional), force_sequential
+        Returns: z_slid, logp, cump (n_batches, n_trials)
+        """
+        y = np.asarray(y)
+
+        if tau is None:
+            if self.best_tau is None:
+                # Check if GenerativeModel has a cached best_t first
+                if hasattr(self.generative_model, 'best_t'):
+                    self.best_tau = self.generative_model.best_t
+                else:
+                    self._optimize_tau(n_trials=y.shape[1])
+            tau = self.best_tau
+
+        # Detect if we should use parallel processing
+        use_parallel = (y.shape[0] > 1 and
+                       not force_sequential and
+                       (self.max_cores is None or self.max_cores > 1))
+
+        if use_parallel:
+            return self._process_parallel(y, tau)
+        else:
+            return self._process_sequential(y, tau)
+
+    def _optimize_tau(self, n_trials=5000, n_train_instances=500):
+        """Find optimal tau for leaky integrator by minimizing prediction error."""
+        X = self.generative_model.generate_batch(n_trials, n_train_instances)[0]
+
+        def fn(tau):
+            z_slid, _, _ = self._compute_leaky_integrator(X, tau)
+            mse = ((z_slid - X)**2).mean()
+            return mse
+
+        optimRes = scipy.optimize.minimize_scalar(fn, bounds=(0, X.shape[1]),
+                                                     method='bounded',
+                                                     options={'xatol':1e-3})
+        if optimRes.success:
+            best_t = optimRes.x
+        else:
+            taus = np.arange(100, -1, -1)
+            z_slid, _, _ = self._compute_leaky_integrator(X, tau=taus)
+            best_t = taus[((z_slid[:, 0, :] - X)**2).mean((0,1)).argmin()]
+
+        self.best_tau = best_t
+        self.generative_model.best_t = best_t  # Sync with GenerativeModel for backward compatibility
+        return best_t
+
+    def _compute_leaky_integrator(self, y_batch, tau_val):
+        """Core leaky integrator implementation."""
+        if type(tau_val) != np.ndarray:
+            tau_val = np.array([tau_val])
+
+        weights = np.zeros((y_batch.shape[1], len(tau_val)))
+        weights[:, tau_val>0] = np.exp(- np.einsum('T,m->Tm', np.arange(y_batch.shape[1], 0, -1), 1/tau_val[tau_val>0]))
+        for tix in np.where(tau_val<=0)[0]:
+            weights[:,tix] = np.eye(y_batch.shape[1])[-1]
+
+        z_slid, s_slid = np.zeros((y_batch.shape[0],) + weights.shape), np.ones((y_batch.shape[0],) + weights.shape)
+
+        for t in range(1, y_batch.shape[1]):
+            w = weights[-t:,:] / weights[-t:, :].sum(0)
+            z_slid[:, t, :] = np.einsum('bT,Tm->bm', y_batch[:,:t], w)
+            s_slid[:, t, :] = np.sqrt(np.einsum('bTm,Tm->bm', (y_batch[:, :t, np.newaxis] - z_slid[:, :t,:])**2, w))
+
+        logp = -0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y_batch[:,:,np.newaxis]) / s_slid)**2
+        cump = 0.5 * (1 + scipy.special.erf((y_batch[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
+
+        if len(tau_val) == 1:
+            z_slid, logp, cump = z_slid[..., 0], logp[..., 0], cump[..., 0]
+
+        return z_slid, logp, cump
+
+    def _process_parallel(self, y, tau):
+        """Use parallel processing for batch inputs."""
+        args_list = [(x[None, ...], tau) for x in y]
+
+        pool = ProcessingPool(nodes=self.max_cores)
+        res = pool.map(lambda args: self._compute_leaky_integrator(args[0], args[1]), args_list)
+
+        # Process results into standard array format
+        z_slid = np.array([r[0][0, :] if r[0].ndim > 1 else r[0] for r in res])
+        logp = np.array([r[1][0, :] if r[1].ndim > 1 else r[1] for r in res])
+        cump = np.array([r[2][0, :] if r[2].ndim > 1 else r[2] for r in res])
+
+        return z_slid, logp, cump
+
+    def _process_sequential(self, y, tau):
+        """Use sequential processing."""
+        z_slid, logp, cump = self._compute_leaky_integrator(y, tau)
+        return z_slid, logp, cump
+
+
 class GenerativeModel():
     """
     COIN Generative Model for context-dependent inference.
@@ -51,6 +363,12 @@ class GenerativeModel():
         else:
             self.pars   = parset['pars']
             self.parset = parset['name']
+
+        # Initialize COIN inference engine
+        self.coin_inference = COINInference(generative_params=self.pars)
+
+        # Initialize leaky average inference engine
+        self.leaky_average_inference = LeakyAverageInference(generative_model=self, max_cores=self.pars.get('max_cores'))
 
         self.si_q    = self.pars['si_q']
         self.si_r    = self.pars['si_r']
@@ -272,108 +590,7 @@ class GenerativeModel():
         Parameters: y (n_batches, n_trials), nruns, n_ctx, max_cores
         Returns: z_coin, logp, cump (n_batches, n_trials), lamb (n_batches, n_ctx, n_trials)
         """
-
-        # Translation to the naming of the hyperparameters in the COIN inference algorithm
-        pmCoinDict = {'si_q'   : 'sigma_process_noise',
-                      'si_r'   : 'sigma_sensory_noise',
-                      'mu_a'   : 'prior_mean_retention',
-                      'si_a'   : 'prior_precision_retention',
-                      'si_d'   : 'prior_precision_drift',
-                      'gamma_t': 'gamma_context',
-                      'alpha_t': 'alpha_context',
-                      'rho_t'  : 'rho_context',
-                      'gamma_q': 'gamma_cue',
-                      'alpha_q': 'alpha_cue'}
-
-        # Build parameter list and values for COIN
-        parlist, parvals = [], []
-        for p in self.pars:
-            if p in pmCoinDict.keys():
-                parlist.append(pmCoinDict[p])
-                if p in ['si_a', 'si_d']: # James encoded si_a and si_d as precisions
-                    parvals.append(1/(self.pars[p]**2))
-                else:
-                    parvals.append(self.pars[p])
-
-        # Instantiate and configure COIN inference object
-        inf = coinp.COIN()
-
-        # Set coin inference parameters according to user passed parameters list and values
-        for i in range(len(parlist)):
-            setattr(inf, parlist[i], float(parvals[i]))
-
-        inf.store = ['predicted_probabilities', 'state_var', 'state_mean', 'drift', 'retention', 'average_state']
-        inf.particles = 100
-        inf.sigma_motor_noise = 0
-        inf.runs = nruns
-        inf.max_contexts = n_ctx
-        inf.max_cores = max_cores
-
-        # Process batch of sequences
-        y = np.asarray(y)
-        mu, logp, cump, lamb = [], [], [], []
-
-        # Add progress bar for batch processing
-        batch_iterator = tqdm(range(y.shape[0])) if y.shape[0] > 1 else range(y.shape[0])
-
-        for b in batch_iterator:
-            y_b = np.squeeze(y[b])
-
-            # Set perturbations for this sequence
-            inf.perturbations = y_b
-
-            # Run COIN simulation
-            out = inf.simulate_coin()
-
-            # Initialize output arrays for this sequence
-            mu_runs = np.zeros((len(y_b), nruns))
-            logp_runs = np.zeros((len(y_b), nruns))
-            lamb_runs = np.zeros((inf.max_contexts + 1, len(y_b), nruns))
-            cump_runs = []
-
-            # Process results from all runs
-            for i in range(nruns):
-                mu_parts = out["runs"][i]["state_mean"]
-                sigma_parts = np.sqrt(out["runs"][i]["state_var"] + inf.sigma_sensory_noise**2)
-                lambda_parts = out["runs"][i]["predicted_probabilities"]
-
-                # Predicted observations
-                mu_runs[:, i] = np.reshape(np.mean(np.sum(lambda_parts * mu_parts, axis=0), axis=0), (1, len(y_b)))
-
-                # True observations
-                y_parts = np.tile(y_b, (mu_parts.shape[0], mu_parts.shape[1], 1))
-
-                # Probability (Gaussian likelihood function) of true y_i to be in the predictive distribution
-                p_y_parts = np.sum((lambda_parts / (np.sqrt(2 * np.pi) * sigma_parts)) *
-                                np.exp(-(y_parts - mu_parts)**2 / (2 * sigma_parts**2)), axis=0)
-
-                # Log probabilities for individual time points
-                logp_runs[:, i] = np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps))
-                lamb_runs[:, :, i] = np.reshape(np.mean(lambda_parts, axis=1), (lambda_parts.shape[0], len(y_b)))
-
-                # Cumulative distribution of the normal distribution
-                cump_runs.append(np.reshape(np.mean(np.sum(lambda_parts * 0.5 * (1 + scipy.special.erf((y_parts - mu_parts) / (np.sqrt(2)
-                                                        * sigma_parts))), axis=0), axis=0), (len(y_b),)))
-
-            # Aggregate results across runs
-            mu_b = np.mean(mu_runs, axis=1)
-            logp_b = np.max(logp_runs, axis=1) + np.log(np.sum(np.exp(logp_runs - np.max(logp_runs, axis=1)[:, np.newaxis]), axis=1)) - np.log(nruns)
-            lamb_b = np.mean(lamb_runs, axis=2)
-            cump_b = np.concatenate(cump_runs)
-
-            # Append to batch results
-            mu.append(mu_b)
-            logp.append(logp_b)
-            cump.append(cump_b)
-            lamb.append(lamb_b)
-
-        # Convert to arrays
-        z_coin = np.array(mu)
-        logp = np.array(logp)
-        cump = np.array(cump)
-        lamb = np.array(lamb)
-
-        return(z_coin, logp, cump, lamb)
+        return self.coin_inference.estimate(y, nruns, n_ctx, max_cores)
 
     # Baselines and heuristic estimations
     def empirical_expected_beta(self, n_contexts=11, n_trials=1000, n_samples=1000):
@@ -397,86 +614,12 @@ class GenerativeModel():
         Parameters: y (n_batches, n_trials), tau (optional), force_sequential
         Returns: z_slid, logp, cump (n_batches, n_trials)
         """
-        y = np.asarray(y)
-
-        if tau is None:
-            if not hasattr(self, 'best_t'):
-                self.fit_best_tau(n_trials=y.shape[1])
-            tau = self.best_t
-
-        # Detect if we should use parallel processing
-        use_parallel = (y.shape[0] > 1 and
-                       not force_sequential and
-                       (self.max_cores is None or self.max_cores > 1))
-
-        # Core leaky integrator computation function
-        def compute_leaky_integrator(y_batch, tau_val):
-            """Core leaky integrator implementation."""
-            if type(tau_val) != np.ndarray:
-                tau_val = np.array([tau_val])
-
-            weights = np.zeros((y_batch.shape[1], len(tau_val)))
-            weights[:, tau_val>0] = np.exp(- np.einsum('T,m->Tm', np.arange(y_batch.shape[1], 0, -1), 1/tau_val[tau_val>0]))
-            for tix in np.where(tau_val<=0)[0]:
-                weights[:,tix] = np.eye(y_batch.shape[1])[-1]
-
-            z_slid, s_slid = np.zeros((y_batch.shape[0],) + weights.shape), np.ones((y_batch.shape[0],) + weights.shape)
-
-            for t in range(1, y_batch.shape[1]):
-                w = weights[-t:,:] / weights[-t:, :].sum(0)
-                z_slid[:, t, :] = np.einsum('bT,Tm->bm', y_batch[:,:t], w)
-                s_slid[:, t, :] = np.sqrt(np.einsum('bTm,Tm->bm', (y_batch[:, :t, np.newaxis] - z_slid[:, :t,:])**2, w))
-
-            logp = -0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y_batch[:,:,np.newaxis]) / s_slid)**2
-            cump = 0.5 * (1 + scipy.special.erf((y_batch[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
-
-            if len(tau_val) == 1:
-                z_slid, logp, cump = z_slid[..., 0], logp[..., 0], cump[..., 0]
-
-            return z_slid, logp, cump
-
-        if use_parallel:
-            # Use parallel processing for batch inputs
-            args_list = [(x[None, ...], tau) for x in y]
-
-            pool = ProcessingPool(nodes=self.max_cores)
-            res = pool.map(lambda args: compute_leaky_integrator(args[0], args[1]), args_list)
-
-            # Process results into standard array format
-            z_slid = np.array([r[0][0, :] if r[0].ndim > 1 else r[0] for r in res])
-            logp = np.array([r[1][0, :] if r[1].ndim > 1 else r[1] for r in res])
-            cump = np.array([r[2][0, :] if r[2].ndim > 1 else r[2] for r in res])
-
-            return z_slid, logp, cump
-        else:
-            # Use sequential processing
-            z_slid, logp, cump = compute_leaky_integrator(y, tau)
-            return z_slid, logp, cump
+        return self.leaky_average_inference.estimate(y, tau, force_sequential)
 
     def fit_best_tau(self, n_trials=5000, n_train_instances=500):
         """Find optimal tau for leaky integrator by minimizing prediction error."""
-
-        X = self.generate_batch(n_trials, n_train_instances)[0]
-
-        def fn(tau):
-            z_slid, _, _ = self.estimate_leaky_average(X, tau)
-            mse = ((z_slid - X)**2).mean()
-            return(mse)
-
-
-        optimRes = scipy.optimize.minimize_scalar(fn, bounds=(0, X.shape[1]), 
-                                                     method='bounded', 
-                                                     options={'xatol':1e-3})				
-        if optimRes.success:
-            best_t = optimRes.x
-        else:
-            taus = np.arange(100, -1, -1)
-            z_slid, _, _ = self.estimate_leaky_average(X, tau=taus)
-
-            best_t = taus[((z_slid[:, 0, :] - X)**2).mean((0,1)).argmin()]
-
-        self.best_t = best_t
-
+        best_t = self.leaky_average_inference._optimize_tau(n_trials, n_train_instances)
+        self.best_t = best_t  # Maintain backward compatibility
         return best_t
 
     # Benchmarks
