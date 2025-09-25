@@ -16,6 +16,7 @@ import time
 from icecream import ic
 from pathos.multiprocessing import ProcessingPool
 from tqdm import tqdm
+import inference_utils
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'COIN_Python')))
@@ -86,26 +87,13 @@ class COINInference:
 
         return inf
 
-    def _compute_gaussian_likelihood(self, lambda_parts, y_expanded, mu_parts, sigma_parts):
+    def _compute_gaussian_likelihood(self, lambda_parts, y, mu_parts, sigma_parts):
         """Compute Gaussian likelihood for predictions."""
-        return np.sum(
-            (lambda_parts / (np.sqrt(2 * np.pi) * sigma_parts)) *
-            np.exp(-(y_expanded - mu_parts)**2 / (2 * sigma_parts**2)),
-            axis=0
-        )
+        return inference_utils.compute_gaussian_likelihood_weighted(lambda_parts, y, mu_parts, sigma_parts)
 
-    def _compute_cumulative_distribution(self, lambda_parts, y_expanded, mu_parts, sigma_parts):
+    def _compute_cumulative_distribution(self, lambda_parts, y, mu_parts, sigma_parts):
         """Compute cumulative distribution function values."""
-        return np.reshape(
-            np.mean(
-                np.sum(
-                    lambda_parts * 0.5 * (1 + scipy.special.erf((y_expanded - mu_parts) / (np.sqrt(2) * sigma_parts))),
-                    axis=0
-                ),
-                axis=0
-            ),
-            (y_expanded.shape[2],)
-        )
+        return inference_utils.compute_cumulative_distribution_weighted(lambda_parts, y, mu_parts, sigma_parts)
 
     def _compute_run_statistics(self, run_output, y_sequence, inf):
         """Compute all statistics for a single COIN run."""
@@ -119,11 +107,8 @@ class COINInference:
             (len(y_sequence),)
         )
 
-        # Expand y for vectorized computation
-        y_expanded = np.tile(y_sequence, (mu_parts.shape[0], mu_parts.shape[1], 1))
-
         # Compute likelihoods
-        p_y_parts = self._compute_gaussian_likelihood(lambda_parts, y_expanded, mu_parts, sigma_parts)
+        p_y_parts = self._compute_gaussian_likelihood(lambda_parts, y_sequence, mu_parts, sigma_parts)
         log_probs = np.log(np.maximum(np.mean(p_y_parts, axis=0), np.finfo(float).eps))
 
         # Responsibilities
@@ -133,7 +118,7 @@ class COINInference:
         )
 
         # Cumulative probabilities
-        cumulative_probs = self._compute_cumulative_distribution(lambda_parts, y_expanded, mu_parts, sigma_parts)
+        cumulative_probs = self._compute_cumulative_distribution(lambda_parts, y_sequence, mu_parts, sigma_parts)
 
         return {
             'predictions': predictions,
@@ -144,26 +129,7 @@ class COINInference:
 
     def _aggregate_run_results(self, all_run_stats, nruns):
         """Aggregate statistics across multiple runs."""
-        # Collect results from all runs
-        mu_runs = np.column_stack([stats['predictions'] for stats in all_run_stats])
-        logp_runs = np.column_stack([stats['log_probs'] for stats in all_run_stats])
-        lamb_runs = np.stack([stats['responsibilities'] for stats in all_run_stats], axis=2)
-        cump_runs = [stats['cumulative_probs'] for stats in all_run_stats]
-
-        # Aggregate
-        predictions = np.mean(mu_runs, axis=1)
-        log_probs = np.max(logp_runs, axis=1) + np.log(
-            np.sum(np.exp(logp_runs - np.max(logp_runs, axis=1)[:, np.newaxis]), axis=1)
-        ) - np.log(nruns)
-        responsibilities = np.mean(lamb_runs, axis=2)
-        cumulative_probs = np.concatenate(cump_runs)
-
-        return {
-            'predictions': predictions,
-            'log_probs': log_probs,
-            'responsibilities': responsibilities,
-            'cumulative_probs': cumulative_probs
-        }
+        return inference_utils.aggregate_run_results_coin(all_run_stats, nruns)
 
     def _process_single_sequence(self, y_sequence, inf, nruns):
         """Process one sequence through COIN inference."""
@@ -244,7 +210,7 @@ class LeakyAverageInference:
         Parameters: y (n_batches, n_trials), tau (optional), force_sequential
         Returns: z_slid, logp, cump (n_batches, n_trials)
         """
-        y = np.asarray(y)
+        y = inference_utils.validate_input_basic(y)
 
         if tau is None:
             if self.best_tau is None:
@@ -255,15 +221,12 @@ class LeakyAverageInference:
                     self._optimize_tau(n_trials=y.shape[1])
             tau = self.best_tau
 
-        # Detect if we should use parallel processing
-        use_parallel = (y.shape[0] > 1 and
-                       not force_sequential and
-                       (self.max_cores is None or self.max_cores > 1))
-
-        if use_parallel:
-            return self._process_parallel(y, tau)
+        # Use utility function to determine processing mode
+        if inference_utils.should_use_parallel(y.shape[0], force_sequential, self.max_cores):
+            processor_func = lambda y_batch: self._compute_leaky_integrator(y_batch, tau)
+            return inference_utils.process_parallel_batches(y, processor_func, self.max_cores)
         else:
-            return self._process_sequential(y, tau)
+            return self._compute_leaky_integrator(y, tau)
 
     def _optimize_tau(self, n_trials=5000, n_train_instances=500):
         """Find optimal tau for leaky integrator by minimizing prediction error."""
@@ -305,32 +268,13 @@ class LeakyAverageInference:
             z_slid[:, t, :] = np.einsum('bT,Tm->bm', y_batch[:,:t], w)
             s_slid[:, t, :] = np.sqrt(np.einsum('bTm,Tm->bm', (y_batch[:, :t, np.newaxis] - z_slid[:, :t,:])**2, w))
 
-        logp = -0.5 * np.log(2*np.pi) -np.log(s_slid) - 0.5 * ((z_slid - y_batch[:,:,np.newaxis]) / s_slid)**2
-        cump = 0.5 * (1 + scipy.special.erf((y_batch[:,:,np.newaxis] - z_slid) / (np.sqrt(2) * s_slid)))
+        logp, cump = inference_utils.compute_leaky_integrator_statistics(y_batch, z_slid, s_slid)
 
         if len(tau_val) == 1:
             z_slid, logp, cump = z_slid[..., 0], logp[..., 0], cump[..., 0]
 
         return z_slid, logp, cump
 
-    def _process_parallel(self, y, tau):
-        """Use parallel processing for batch inputs."""
-        args_list = [(x[None, ...], tau) for x in y]
-
-        pool = ProcessingPool(nodes=self.max_cores)
-        res = pool.map(lambda args: self._compute_leaky_integrator(args[0], args[1]), args_list)
-
-        # Process results into standard array format
-        z_slid = np.array([r[0][0, :] if r[0].ndim > 1 else r[0] for r in res])
-        logp = np.array([r[1][0, :] if r[1].ndim > 1 else r[1] for r in res])
-        cump = np.array([r[2][0, :] if r[2].ndim > 1 else r[2] for r in res])
-
-        return z_slid, logp, cump
-
-    def _process_sequential(self, y, tau):
-        """Use sequential processing."""
-        z_slid, logp, cump = self._compute_leaky_integrator(y, tau)
-        return z_slid, logp, cump
 
 
 class GenerativeModel():
