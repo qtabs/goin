@@ -1,10 +1,6 @@
-import collections.abc
 import copy
-import functools
-import multiprocessing
 import numpy as np
 import os.path
-import pathlib
 import pickle
 import random
 import scipy.optimize
@@ -171,18 +167,6 @@ class COINInference:
 
         return z_coin, logp, cump, lamb
 
-    def _validate_inputs(self, y, nruns, n_ctx, max_cores):
-        """Validate inputs and raise informative errors."""
-        if not isinstance(y, np.ndarray):
-            raise TypeError("Input y must be a numpy array")
-        if y.ndim != 2:
-            raise ValueError("Input y must have shape (n_batches, n_trials)")
-        if nruns < 1:
-            raise ValueError("nruns must be >= 1")
-        if n_ctx < 1:
-            raise ValueError("n_ctx must be >= 1")
-        if max_cores < 1:
-            raise ValueError("max_cores must be >= 1")
 
     def estimate(self, y, nruns=1, n_ctx=10, max_cores=1):
         """Run COIN inference algorithm.
@@ -190,7 +174,6 @@ class COINInference:
         Parameters: y (n_batches, n_trials), nruns, n_ctx, max_cores
         Returns: z_coin, logp, cump (n_batches, n_trials), lamb (n_batches, n_ctx, n_trials)
         """
-        self._validate_inputs(y, nruns, n_ctx, max_cores)
         inf = self._configure_coin_object(nruns, n_ctx, max_cores)
         batch_results = self._process_batch_sequences(np.asarray(y), inf, nruns)
         return self._format_outputs(batch_results)
@@ -326,6 +309,12 @@ class GenerativeModel():
         self.rho_t   = self.pars['rho_t']
         self.max_cores = self.pars['max_cores']
 
+    def __del__(self):
+        """Clean up ProcessingPool resources."""
+        if hasattr(self, 'pool') and self.pool is not None:
+            self.pool.close()
+            self.pool.join()
+
     # Auxiliary samplers
     def _sample_N_(self, mu, si, N=1):
         """Sample N values from normal distribution N(mu, si)."""
@@ -395,9 +384,6 @@ class GenerativeModel():
         else:
             res = [self.sample_contexts(seed) for seed in seeds]
 
-        # parallel_generate_session = functools.partial(self.generate_session)
-        # with multiprocessing.Pool() as pool:
-        #     res = pool.map(parallel_generate_session, seeds)
 
         batch = dict()
         if type(res[0]) is list:
@@ -422,6 +408,7 @@ class GenerativeModel():
             self.n_trials = n_trials
 
         if seed is not None:
+            random_state = np.random.get_state()
             np.random.seed(seed)
 
         c = np.zeros((1, self.n_trials), int)
@@ -438,6 +425,9 @@ class GenerativeModel():
         y[0, :]  = self.sample_observations(contexts, states)
         q[0, :]  = self.sample_cues(contexts)
         c[0, :]  = copy.deepcopy(contexts)
+
+        if seed is not None:
+            np.random.set_state(random_state)
 
         return(y, q, c)
 
@@ -485,6 +475,7 @@ class GenerativeModel():
         """
 
         if seed is not None:
+            random_state_contexts = np.random.get_state()
             np.random.seed(seed)
         if n_trials is not None: 
             self.n_trials = n_trials
@@ -502,7 +493,10 @@ class GenerativeModel():
                 beta = self._break_new_partition_(beta, self.gamma_t)
                 if len(beta) > N.shape[0]: # pad N if contexts > max_ctx
                     N = np.pad(N, ((0, N.shape[0]), (0, N.shape[0])))
-            N[contexts[-2], contexts[-1]] += 1  # Add transition count 
+            N[contexts[-2], contexts[-1]] += 1  # Add transition count
+
+        if seed is not None:
+            np.random.set_state(random_state_contexts)
 
         return contexts
 
@@ -548,9 +542,9 @@ class GenerativeModel():
         uniform   = [1/n_contexts for ctx in range(n_contexts)]
 
         # Global empirical distribution
-        glob_dist = np.array(empirical + [uniform]).mean(0)
+        global_distribution = np.array(empirical + [uniform]).mean(0)
 
-        return glob_dist
+        return global_distribution
 
     def estimate_leaky_average(self, y, tau=None, force_sequential=False):
         """Run leaky integrator baseline.
@@ -623,11 +617,11 @@ class GenerativeModel():
             LI_ct_ac = (C == 0).mean(1) # LI assumed to predict always context 0 # Context identification accuracy
             LI_ct_p  = (C == 0).mean(1) # Probability of the actual context on the posterior of the prediction
             # p_ctx not defined in LI --> we predict instead the empirical global distribution across c
-            e_beta = self.empirical_expected_beta(n_trials=n_trials, n_samples=100*n_instances) 
+            empirical_beta = self.empirical_expected_beta(n_trials=n_trials, n_samples=100*n_instances) 
             LI_ct_ce = np.zeros(C.shape[0])
             for b in range(C.shape[0]):
-                for ctx in range(len(e_beta)):
-                    LI_ct_ce[b] += np.log(e_beta[ctx]) * (C[b, :] == ctx).mean()
+                for ctx in range(len(empirical_beta)):
+                    LI_ct_ce[b] += np.log(empirical_beta[ctx]) * (C[b, :] == ctx).mean()
 
             print(f'Estimating coin...', flush=True)
 
@@ -638,8 +632,8 @@ class GenerativeModel():
             coin_kol = inference_utils.compute_kolmogorov_statistic(cump_coin, cump_coin.shape[1])
             coin_ce  = ll_coin.mean(1)
 
-            c_hat = np.argmax(lamb, axis=1) # Predicted context
-            coin_ct_ac = (c_hat == C).mean(1) # Context identification accuracy
+            predicted_contexts = np.argmax(lamb, axis=1) # Predicted context
+            coin_ct_ac = (predicted_contexts == C).mean(1) # Context identification accuracy
             coin_ct_p, coin_ct_ce = inference_utils.compute_context_probability_statistics(lamb, C, minloglik)
 
 
