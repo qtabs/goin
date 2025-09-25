@@ -617,10 +617,8 @@ class GenerativeModel():
             print(f'Estimating LI...', end=' ', flush=True)
             z_slid, p_slid, cump_slid = self.estimate_leaky_average(X, tau)
 
-            F = np.linspace(0, 1, 1000)
-            cums_cump_slid = np.array([(cump_slid <= f).sum(1)/n_trials for f in F])
             LI_mse = ((z_slid - X)**2).mean(1)
-            LI_kol = abs(cums_cump_slid - F[:, None]).max(0)
+            LI_kol = inference_utils.compute_kolmogorov_statistic(cump_slid, n_trials)
             LI_ce  = p_slid.mean(1) # Observations cross entropy
             LI_ct_ac = (C == 0).mean(1) # LI assumed to predict always context 0 # Context identification accuracy
             LI_ct_p  = (C == 0).mean(1) # Probability of the actual context on the posterior of the prediction
@@ -637,61 +635,36 @@ class GenerativeModel():
             loglamb = np.log(lamb + np.exp(minloglik))
 
             coin_mse = ((z_coin - X)**2).mean(1)
-            cums_cump_coin = np.array([(cump_coin <= f).sum(1)/cump_coin.shape[1] for f in F])
-            coin_kol = abs(cums_cump_coin - F[:, np.newaxis]).max(0)
+            coin_kol = inference_utils.compute_kolmogorov_statistic(cump_coin, cump_coin.shape[1])
             coin_ce  = ll_coin.mean(1)
 
             c_hat = np.argmax(lamb, axis=1) # Predicted context
             coin_ct_ac = (c_hat == C).mean(1) # Context identification accuracy
-            coin_ct_p  = np.zeros(C.shape[0]) # Probability of the actual context on the posterior of the prediction
-            coin_ct_ce = np.zeros(C.shape[0]) # Context cross-entropy
-
-            # For each sample:
-            for b in range(C.shape[0]):
-                # For each context:
-                for ctx in range(lamb.shape[1]):
-                    # Get timepoints where predicted context was correct (indices of hits)
-                    ctx_ix = np.where(C[b, :] == ctx)[0]
-                    # Compute cumulative probability over time points
-                    coin_ct_p[b] += np.nansum(lamb[b, ctx, ctx_ix]) / C.shape[1]
-                    loglambs = np.maximum(minloglik, np.log(lamb[b, ctx, ctx_ix]))
-                    coin_ct_ce[b] += np.nansum(loglambs) / C.shape[1]
+            coin_ct_p, coin_ct_ce = inference_utils.compute_context_probability_statistics(lamb, C, minloglik)
 
 
             perf = {'LI' :  {'mse': {}, 'kol': {}, 'ce': {}, 'ct_ac': {}, 'ct_p': {}, 'ct_ce': {}}, 
                     'coin': {'mse': {}, 'kol': {}, 'ce': {}, 'ct_ac': {}, 'ct_p': {}, 'ct_ce': {}}}
 
             # Observations MSE
-            perf['LI']['mse']['avg']      = LI_mse.mean()
-            perf['LI']['mse']['sem']      = LI_mse.std() / np.sqrt(n_instances)
+            perf['LI']['mse']     = inference_utils.compute_mean_sem(LI_mse, n_instances)
+            perf['coin']['mse']   = inference_utils.compute_mean_sem(coin_mse, n_instances)
             # Observations calibration
-            perf['LI']['kol']['avg']      = LI_kol.mean()
-            perf['LI']['kol']['sem']      = LI_kol.std() / np.sqrt(n_instances)
+            perf['LI']['kol']     = inference_utils.compute_mean_sem(LI_kol, n_instances)
+            perf['coin']['kol']   = inference_utils.compute_mean_sem(coin_kol, n_instances)
             # Observations cross-entropy
-            perf['LI']['ce']['avg']       = LI_ce.mean()
-            perf['LI']['ce']['sem']       = LI_ce.std() / np.sqrt(n_instances)
+            perf['LI']['ce']      = inference_utils.compute_mean_sem(LI_ce, n_instances)
+            perf['coin']['ce']    = inference_utils.compute_mean_sem(coin_ce, n_instances)
             # Context identification accuracy
-            perf['LI']['ct_ac']['avg']    = LI_ct_ac.mean()
-            perf['LI']['ct_ac']['sem']    = LI_ct_ac.std() / np.sqrt(n_instances)
+            perf['LI']['ct_ac']   = inference_utils.compute_mean_sem(LI_ct_ac, n_instances)
+            perf['coin']['ct_ac'] = inference_utils.compute_mean_sem(coin_ct_ac, n_instances)
             # Probability of the actual context on the posterior of the prediction
-            perf['LI']['ct_p']['avg']     = LI_ct_p.mean()
-            perf['LI']['ct_p']['sem']     = LI_ct_p.std() / np.sqrt(n_instances)
+            perf['LI']['ct_p']    = inference_utils.compute_mean_sem(LI_ct_p, n_instances)
+            perf['coin']['ct_p']  = inference_utils.compute_mean_sem(coin_ct_p, n_instances)
             # Context cross-entropy
-            perf['LI']['ct_ce']['avg']    = LI_ct_ce.mean()
-            perf['LI']['ct_ce']['sem']    = LI_ct_ce.std() / np.sqrt(n_instances)
+            perf['LI']['ct_ce']   = inference_utils.compute_mean_sem(LI_ct_ce, n_instances)
+            perf['coin']['ct_ce'] = inference_utils.compute_mean_sem(coin_ct_ce, n_instances)
 
-            perf['coin']['mse']['avg']    = coin_mse.mean()
-            perf['coin']['mse']['sem']    = coin_mse.std() / np.sqrt(n_instances)
-            perf['coin']['kol']['avg']    = coin_kol.mean()
-            perf['coin']['kol']['sem']    = coin_kol.std() / np.sqrt(n_instances)
-            perf['coin']['ce']['avg']     = coin_ce.mean()
-            perf['coin']['ce']['sem']     = coin_ce.std() / np.sqrt(n_instances)
-            perf['coin']['ct_ac']['avg']  = coin_ct_ac.mean()
-            perf['coin']['ct_ac']['sem']  = coin_ct_ac.std() / np.sqrt(n_instances)
-            perf['coin']['ct_p']['avg']   = coin_ct_p.mean()
-            perf['coin']['ct_p']['sem']   = coin_ct_p.std() / np.sqrt(n_instances)
-            perf['coin']['ct_ce']['avg']  = coin_ct_ce.mean()
-            perf['coin']['ct_ce']['sem']  = coin_ct_ce.std() / np.sqrt(n_instances)
 
             rat = perf['LI']['mse']['avg'] / perf['coin']['mse']['avg']
             dif = perf['coin']['ct_ce']['avg'] - perf['LI']['ct_ce']['avg']
