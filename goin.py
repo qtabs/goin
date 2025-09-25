@@ -11,8 +11,14 @@ import glob
 import os
 import time
 import copy
-from icecream import ic 
+from icecream import ic
+
+# Constants
 DEV='cuda' # Default device; can be overwritten when instantiating Model and GruRNN
+DEFAULT_BATCH_SIZE = 64
+DEFAULT_N_TRIALS = 5000
+DEFAULT_BATCH_RES = 10
+DEFAULT_BATCH_SIZE_TRAINING = 128
 
 
 class GruRNN(nn.Module):
@@ -54,8 +60,7 @@ class GruRNN(nn.Module):
 		self.n_hidden = n_hidden
 		self.n_layers = n_layers
 
-		# Harcoded pars:
-		dropout      = 0.0
+		# Hardcoded pars:
 		dim_in       = 1
 		dim_out_obs  = 2
 		dim_out_lamb = 11
@@ -83,7 +88,7 @@ class GruRNN(nn.Module):
 			self.hidden_state = self.h0.repeat([1, batch_size, 1]) 
 
 	def forward(self, x):
-		if self.hidden_state is not None:
+		if self.hidden_state is None:
 			self.init_hidden(batch_size=x.shape[0])
 		x, self.hidden_state = self.gru(x, self.hidden_state)
 		y = self.out_obs(x)
@@ -372,7 +377,7 @@ class Model():
 		u, s = np.zeros(x.shape), np.zeros(x.shape) 
 		l = np.zeros((x.shape[0], x.shape[1], self.model.out_lamb.out_features))
 
-		bunches = [(64*n, min(64*(n+1), x.shape[0])) for  n in range(int(np.ceil(x.shape[0]/64)))]
+		bunches = [(DEFAULT_BATCH_SIZE*n, min(DEFAULT_BATCH_SIZE*(n+1), x.shape[0])) for n in range(int(np.ceil(x.shape[0]/DEFAULT_BATCH_SIZE)))]
 		for b in bunches:
 			z = torch.tensor(x[b[0]:b[1]], dtype=torch.float, requires_grad=False).to(self.dev)
 			with torch.no_grad():
@@ -464,8 +469,7 @@ class Model():
 		lossHistory, epoch0, logpath = self.set_losslog(savename, resume, n_batches)
 
 		# Setting up GM and benchmarks
-		# gm = coin.CRFGenerativeModel(parset)
-		gm = coin.UrnGenerativeModel(parset)
+		gm = coin.GenerativeModel(parset)
 		benchmarks = gm.benchmark(n_trials, suffix='training')
 		mse_target = benchmarks['perf']['coin']['mse']['avg']
 		mse_target += tolerance * benchmarks['perf']['coin']['mse']['sem']
@@ -551,7 +555,7 @@ class Model():
 		lossHistory, epoch0, logpath = self.set_losslog(savename, resume, n_batches)
 
 		# Setting up GM and benchmarks
-		gm = coin.UrnGenerativeModel(parset)
+		gm = coin.GenerativeModel(parset)
 		benchmarks = gm.benchmark(n_trials, suffix='training')
 		acc_target = benchmarks['perf']['coin']['ct_ac']['avg']
 		acc_target += tolerance * benchmarks['perf']['coin']['ct_ac']['sem']
@@ -573,8 +577,9 @@ class Model():
 				opt.zero_grad()
 
 				# Generate data
-				y, q, c = gm.generate_batch(n_trials, batch_size)
-				x = torch.tensor(y, dtype=torch.float, requires_grad=False).to(self.dev)
+				y, _, c = gm.generate_batch(n_trials, batch_size)
+				x = torch.tensor(y, dtype=torch.float, requires_grad=False).to(self.dev).unsqueeze(-1)
+				c = torch.tensor(c, dtype=torch.long, requires_grad=False).to(self.dev).unsqueeze(-1)
 
 				# Compute loss
 				_, loss, _ = self.compute_loss(gm, n_trials, batch_size, ctx=True)
@@ -608,121 +613,14 @@ class Model():
 
 		print(f'###### END OF CTX-TRAINING TRAINING ######\n')
 
-	def tune(self, parset, savename=None, oracle=0.1, dweight=0.2, lr=0.01, train_sched=(10,5), freeze=[], resume=False, dataparset=None): 
-		""" Trains the wrapped nn.Module to minimise cross entropy of the predictions on the 
-		experimental data corresponding to the dataparset subject. It uses cross-entropy to the 
-		predictions on samples drawn from a coin.GenerativeModel with hyperparametrisation parset
-		as a regularisation term.
-
-		Parameters
-		----------
-		parset
-			String identifying the hyperparametrisation of the coin.GenerativeModel with which to 
-			train the model. See coin.load_pars() for more details.
-		savename : str 
-			Path where to save the statedict. If not a full path, it assumes the file is in
-			./models.
-		oracle   : float (optional)
-			Normalised weight of the component of the regularisation term of the loss associated to
-			the context cross-entropy. I.e.:
-			regularisation_loss = (1-oracle) * loss_observations + oracle * loss_context. 
-			0 <= oracle <= 1.
-		dweight  : float (optional)
-			Normalised weight of the component of the loss associated to the data fit.
-			I.e., the training loss = dweight * loss_data + (1-dweithg) * regularisation_loss
-			0 <= dweight <= 1.
-		lr  : float (optional)
-			Baseline learning rate.
-		train_sched : tuple
-			Tuple specifying the (maximum number of epochs, number of batches in an epoch). The 
-			number of training epochs will be shorter if the MSE of the model reaches the COIN 
-			benchmark at an earlier time.
-		freeze  : list (optional)
-			List of string indicating the modules of the warapped nn.modules that should not be 
-			modified during training. Each string should be the name of a submodule of the model, 
-			not the specific set of weights; e.g., 'gru', 'out_obs', or 'out_lamb' when using GruRNN
-		resume  : bool (optional)
-			Whether to resume training or start from scratch. If set to True, it will attempt to 
-			locate an existing loss_log.
-		dataparset  : str
-			String identifying the dataset to use to train the model. See coin.load_recovery_data()
-			for more info. If dataparset is not specified, it is set to coincide with parset.
-		"""
-
-		if dataparset is None:
-			dataparset = parset
-
-		# Hardcoded paramters
-		n_trials, batch_size, batch_res = self.load_opt_defaults()
-		tolerance = 0.5  # minimum MSE of the model for early tuning halting as number of SEMs
-
-		# Setting up optimisation
-		self.model.train()
-		n_epochs,n_batches,opt,lr_scheduler = self.set_optim(lr, train_sched, freeze=freeze)
-
-		# Preparing/loading loss log
-		lossHistory, epoch0, logpath = self.set_losslog(savename, resume, n_batches)
-
-		# Setting up GM and benchmarks
-		gm = coin.UrnGenerativeModel(parset)
-		benchmarks = gm.benchmark(n_trials, suffix='training')
-		dd = self.set_tuning_data(dataparset)
-
-		# Tuning
-		for e in range(epoch0, epoch0 + n_epochs):
-
-			epocht0 = time.time()
-
-			print(f'### TUNING EPOCH {e} ({gm.parset})  | {time.ctime()} ###')
-			tt = time.time()
-			lossHistory.append([])
-
-			for batch in range(n_batches):
-
-				# Initialise model
-				self.model.init_hidden(batch_size)
-				opt.zero_grad()
-
-				# Compute loss
-				ctx = (oracle!=0)
-				loss_obs,loss_ctx,loss_dd = self.compute_loss(gm, n_trials, batch_size, ctx, dd)
-				loss = (1-dweight) * ((1-oracle)*loss_obs + oracle*loss_ctx) + dweight * loss_dd
-
-				# Step
-				loss.backward()
-				opt.step()
-				lr_scheduler.step()
-
-				# Logging and reporting
-				if batch % batch_res == batch_res-1:
-					lr = lr_scheduler.get_last_lr()[0]
-					losses  = (loss_obs,loss_ctx,loss_dd) if oracle !=0 else (loss_obs,None,loss_dd)
-					loss_np = self.loss_log(logpath,batch,batch_res,n_batches,tt,lr,loss,losses)
-					tt = time.time()
-					lossHistory[-1].append(loss_np)
-			
-			if savename is not None:
-				self.save_weights(savename, epoch=e)
-
-			print(f' ----- Epoch {e} done! Epoch time = {(time.time()-epocht0)/60:.1f} minutes')
-			mse_r = self.tuning_log(lossHistory, epoch0, batch_res, savename, benchmarks, dd)
-
-			if mse_r < tolerance:
-				mse_target_s  = f'{benchmarks["perf"]["coin"]["mse"]["avg"]:.3f}'
-				mse_target_s += f'+{tolerance:.3f} x {benchmarks["perf"]["coin"]["mse"]["avg"]:.3f}'
-				print(f'MSE target reached (mse/sem = {mse_r:.2f} < {tolerance:.2f})!')
-				break
-
-		print('###### END OF TUNING ######\n')
-
-	def compute_loss(self, gm, n_trials, batch_size, ctx=True, dd=None):
+	def compute_loss(self, gm, n_trials, batch_size, ctx=True):
 		""" Auxiliary function that computes the three potential terms of the training loss for one 
 		batch
 
 		Parameters
 		----------
 		gm         : coin.GenerativeModel
-			A GenerativeModel object to draw data from. CRFGenerativeModel runs faster for low 
+			A GenerativeModel object to draw data from. GenerativeModel runs faster for low 
 			n_trials.
 		n_trials   : int
 			number of time points (i.e., trials in the COIN jargon) in each sequence
@@ -745,19 +643,14 @@ class Model():
 
 		lossfunc = nn.GaussianNLLLoss()
 
-		y, q, c = gm.generate_batch(n_trials, batch_size)
-		x = torch.tensor(y, dtype=torch.float, requires_grad=False).to(self.dev)
+		y, _, c = gm.generate_batch(n_trials, batch_size)
+		x = torch.tensor(y, dtype=torch.float, requires_grad=False).to(self.dev).unsqueeze(-1)
+		c = torch.tensor(c, dtype=torch.long, requires_grad=False).to(self.dev).unsqueeze(-1)
 		u, s, l = self.run(x)
 
 		loss_obs = lossfunc(x[:,1:,0], u[:,1:,0], s[:,1:,0]**2)
 		loss_ctx = self.ctxlossfunc(c, l) if ctx else torch.tensor(0)
-
-		if dd is None:
-			loss_dd = torch.tensor(0)
-		else:
-			noise = gm.si_r * torch.randn(dd['f'].shape).to(self.dev).float()
-			u, s, c = self.run(dd['f'] + noise)
-			loss_dd = lossfunc(dd['y'], u[0, dd['t'], 0], s[0, dd['t'], 0]**2)
+		loss_dd = torch.tensor(0)
 
 		return loss_obs, loss_ctx, loss_dd
 
@@ -882,42 +775,6 @@ class Model():
 
 		return lossHistory, epoch0, logpath
 
-	def set_tuning_data(self, dataparset):
-		""" Auxiliary function that loads and prepares the experimental data for training procedures 
-			that include fitting the predictions of the model to the actual data
-
-		Parameters
-		----------
-		dataparset  : str
-			String identifying the dataset to use to train the model. See coin.load_recovery_data()
-			for more info.
-		
-		Returns
-		dict
-			Dictionary with fields: 
-			dd['f'] : sequence of ground-truth field of the experiments
-			dd['t'] : timepoints corresponding to each of the datapoints 
-			dd['y'] : datapoints
-			dd['x'] : noisy observations of the ground-truth fields to serve as model inputs
-			dd['u'] : predictions of the COIN model for dd['x']
-		----------
-		"""
-
-		gm   = coin.CRFGenerativeModel(dataparset)
-		data = coin.load_recovery_data(dataparset)
-
-		t = data[1].astype(np.int32)
-		x = (data[2].astype(float) + gm.si_r * np.random.randn(20, data[2].shape[0]))[..., None]
-		u_coin = gm.estimate_coin(x)[0][:, t]
-
-		dd = {'f' : torch.tensor(data[2][None, :, None]).to(self.dev).float(),
-			  't' : t,
-			  'y' : torch.tensor(data[0][0]).to(self.dev).float(),
-			  'x' : x,
-			  'u' : u_coin}
-
-		return dd
-
 	def load_opt_defaults(self):
 		""" Auxiliary function storing the hardcoded parameters of the optimisation
 		
@@ -931,9 +788,9 @@ class Model():
 			every how many batches the loss is written down to the loss history
 		"""
 
-		n_trials     = 5000
-		batch_res    = 10   # Store and report loss every batch_res batches
-		batch_size   = 128
+		n_trials     = DEFAULT_N_TRIALS
+		batch_res    = DEFAULT_BATCH_RES   # Store and report loss every batch_res batches
+		batch_size   = DEFAULT_BATCH_SIZE_TRAINING
 
 		return n_trials, batch_size, batch_res
 	
@@ -1081,13 +938,13 @@ class Model():
 		# Marking last 5 minima
 		lharray = np.array(lossHistory)
 		ix = np.unravel_index(lharray.reshape(-1).argsort()[:5], lharray.shape)
+		red_color = np.array([255, 0, 0]) / 255
+		yellow_color = np.array([255, 239, 69]) / 255
 		for e, b, n in zip(*ix, range(len(ix[0]))):
 			trial = batch_res * (sum([len(lossHistory[e0]) for e0 in range(e)]) + b)
-			c0 = np.array(matplotlib.colors.to_rgb('tab:red'))
-			c1 = np.array(matplotlib.colors.to_rgb('tab:blue'))
-			c1 = np.array([255, 239, 69]) / 255
-			c0 = np.array([255, 0, 0]) / 255
-			cTrial = matplotlib.colors.to_hex((1-(n/(len(ix[0])-1)))*c0 + (n/(len(ix[0])-1))*c1)
+			color_weight = n / (len(ix[0]) - 1)
+			interpolated_color = (1 - color_weight) * red_color + color_weight * yellow_color
+			cTrial = matplotlib.colors.to_hex(interpolated_color)
 			ax_loss.plot(trial, lossHistory[e][b], 'v', color=cTrial)
 
 		# Saving
@@ -1099,274 +956,6 @@ class Model():
 
 		return(perf['gru']['mse']['avg'], perf['gru']['ct_ac']['avg'])
 		
-	def tuning_log(self, lossHistory, epoch0, batch_res, savename, benchmarks, dd):
-		""" Auxiliary function that prints a summary figure detailing the progress of the training (in
-			use when optimising predictions to match empirical data)	
-
-		Parameters
-		----------
-		lossHistory  : list
-			List of lists where each list encodes the history of the loss function in each epoch
-		epoch0       : int
-			The number of the epoch in which the training has started (useful for resumed training)
-		batch_res    : int
-			Every how many batches the loss is written down to the loss history
-		savename     : str
-			Path where the statedict of the model will be saved; used to derive a saving path for 
-			the summary figure
-		benchmarks   : dict
-			Dictionary with the benchmarks for the generative model, as provided by 
-			coin.GenerativeModel.benchmark()
-		dd   :  dict
-			set encoding the experimental data for the fit, as computed by set_tuning_data()
-
-		Returns
-		----------
-		float
-			Mse of the model predictions with respect to the experimental data
-		"""
-
-		# Estimating model predictions on the benchmarking samples
-		self.model.eval()
-		X, C = benchmarks['X'], benchmarks['C']
-		perf, u, s, c_hat, c_pr = self.benchmark(X, C)
-		self.model.train()
-
-		# Figure config
-		fig  = plt.figure()
-		gs   = fig.add_gridspec(4,6)
-		ax_ex = [fig.add_subplot(gs[n, :]) for n in range(2)] + [fig.add_subplot(gs[2, :3])]
-		ax_dd_mse, ax_dd = fig.add_subplot(gs[2, 3]), fig.add_subplot(gs[2, 4:])
-		ax_mse, ax_kol  = fig.add_subplot(gs[3, 0]), fig.add_subplot(gs[3, 1])
-		ax_cacc, ax_cce = fig.add_subplot(gs[3, 2]), fig.add_subplot(gs[3, 3])
-		ax_loss = fig.add_subplot(gs[3, 4:]) 
-
-		# Plotting a few examples
-		for n in range(len(ax_ex)):
-			plot_predictions(X[n], u[n], s[n], C[n], c_hat[n], c_pr[n],  ax_ex[n])
-			ax_ex[n].set_xlim([0, X.shape[1]])
-		ax_ex[n].set_xlim([0, 2400])
-
-
-		# Estimating responses to data's paradigm
-		self.model.eval()
-		u = self.run(torch.tensor(dd['x']).to(self.dev).float())[0].detach().cpu().numpy()[..., 0]
-		self.model.train()		
-		mod_avg, mod_sem = u.mean(0)[dd['t']], u.std(0)[dd['t']] / np.sqrt(u.shape[0])
-		coin_avg, coin_sem = dd['u'].mean(0), dd['u'].std(0) / np.sqrt(dd['u'].shape[0])
-
-		ax_dd.fill_between(dd['t'], coin_avg-coin_sem, coin_avg+coin_sem, color='tab:green', alpha=0.2)
-		ax_dd.fill_between(dd['t'], mod_avg-mod_sem, mod_avg+mod_sem, color='k', alpha=0.2)
-		ax_dd.plot(dd['f'][0,:,0].detach().cpu().numpy(), color='tab:blue', label='field')
-		ax_dd.plot(dd['t'], mod_avg, color='k', label='GRU')
-		ax_dd.plot(dd['t'], coin_avg, color='tab:green', label='coin')
-		ax_dd.plot(dd['t'], dd['y'].detach().cpu().numpy(), color='tab:orange', label='participant')
-		ax_dd.set_xlabel('trial number')
-		ax_dd.set_ylabel('field / estimation')
-
-		# Plotting data fit
-		mod_mse  = ((u[:, dd['t']] - dd['y'].cpu().detach().numpy())**2).mean(1)
-		coin_mse = ((dd['u'] - dd['y'].cpu().detach().numpy())**2).mean(1)
-		mod_mse_avg, mod_mse_sem = mod_mse.mean(), mod_mse.std() / np.sqrt(mod_mse.shape[0])
-		coin_mse_avg, coin_mse_sem = coin_mse.mean(), coin_mse.std() / np.sqrt(coin_mse.shape[0])
-		mse_r = mod_mse_avg / mod_mse_sem
-
-		colours = ['tab:green', 'tab:gray'] 
-		vals, errs = [coin_mse_avg, mod_mse_avg], [coin_mse_sem, mod_mse_sem]
-		ax_dd_mse.bar([0, 1], vals, yerr=errs, color=colours)
-		ax_dd_mse.set_xticks([0, 1])
-		ax_dd_mse.set_xticklabels(['COIN', 'GRU'])
-		ax_dd_mse.set_ylabel('mse')
-
-		# Plotting Performance
-		perf = {**{'gru': perf}, **benchmarks['perf']}
-		plotvec = dict()
-		for key in ['mse', 'kol', 'ce']:
-			plotvec[key] = dict()
-			for val in ['avg', 'sem']:
-				plotvec[key][val] =  [perf[mod][key][val] for mod in ['LI', 'coin', 'gru']]
-
-		for key in ['ct_ac', 'ct_ce']:
-			plotvec[key] = dict()
-			for val in ['avg', 'sem']:
-				plotvec[key][val] =  [perf[mod][key][val] for mod in ['coin', 'gru']]
-
-		colours = ['tab:purple', 'tab:green', 'tab:gray'] 
-		ax_mse.bar([0, 1, 2], plotvec['mse']['avg'], yerr=plotvec['mse']['sem'], color=colours)
-		ax_mse.set_xticks([0, 1, 2])
-		ax_mse.set_xticklabels(['Leak-Int', 'COIN', 'GRU'])
-		ax_mse.set_ylabel('mse')
-		ax_kol.bar([0, 1, 2], plotvec['kol']['avg'], yerr=plotvec['kol']['sem'], color=colours)
-		ax_kol.set_xticks([0, 1, 2])
-		ax_kol.set_xticklabels(['Leak-Int', 'COIN', 'GRU'])
-		ax_kol.set_ylabel('KS-stat')
-		
-		colours = ['tab:green', 'tab:gray'] 
-		ax_cacc.bar([0, 1], plotvec['ct_ac']['avg'], yerr=plotvec['ct_ac']['sem'], color=colours)
-		ax_cacc.set_xticks([0, 1])
-		ax_cacc.set_xticklabels(['COIN', 'GRU'])
-		ax_cacc.set_ylabel('ctx accuracy')
-		ax_cce.bar( [0, 1], plotvec['ct_ce']['avg'],  yerr=plotvec['ct_ce']['sem'],  color=colours)
-		ax_cce.set_xticks([0, 1])
-		ax_cce.set_xticklabels(['COIN', 'GRU'])
-		ax_cce.set_ylabel('ctx CE')
-
-		# Plotting loss evolution
-		t0 = 0
-		colours = ['k', 'tab:gray']
-		for e in range(len(lossHistory)):
-			trials = batch_res * np.arange(t0, t0 + len(lossHistory[e]))
-			ax_loss.plot(trials, np.array(lossHistory[e]), color=colours[(epoch0+e)%2])
-			t0 += len(lossHistory[e])
-		ymin = 0.2 * np.floor(5 * np.array(lossHistory).min()) - 0.2
-		ymax = 0.2 * min(25, 5 * np.ceil(np.array(lossHistory).max())) + 0.1
-		ax_loss.set_ylim([ymin, ymax])
-		ax_loss.set_xlabel('batch number')
-		ax_loss.set_ylabel('loss')
-
-		# Marking last 5 minima
-		lharray = np.array(lossHistory)
-		ix = np.unravel_index(lharray.reshape(-1).argsort()[:5], lharray.shape)
-		for e, b, n in zip(*ix, range(len(ix[0]))):
-			trial = batch_res * (sum([len(lossHistory[e0]) for e0 in range(e)]) + b)
-			c0 = np.array(matplotlib.colors.to_rgb('tab:red'))
-			c1 = np.array(matplotlib.colors.to_rgb('tab:blue'))
-			c1 = np.array([255, 239, 69]) / 255
-			c0 = np.array([255, 0, 0]) / 255
-			cTrial = matplotlib.colors.to_hex((1-(n/(len(ix[0])-1)))*c0 + (n/(len(ix[0])-1))*c1)
-			ax_loss.plot(trial, lossHistory[e][b], 'v', color=cTrial)
-
-		# Saving
-		fig.set_size_inches(23, 13)
-		fig.subplots_adjust(left=0.05,right=0.95,bottom=0.05,top=0.95,wspace=0.3,hspace=0.3)
-		plt.savefig(f'./logs/{savename.split(".")[0]}-e{len(lossHistory):03}.png')
-		plt.cla()
-		plt.close(fig)
-
-		return mse_r
-
-	# COIN Experiments
-	def run_experiment_coin(self, experiment, N=20, axs=None):
-		""" Computes the prediction of the wrapped nn.Module under the fields of an experiment from
-			the COIN paper
-		
-		Parameters
-		----------
-		experiment : str
-			Reference to the experiment; see coin.generate_field_sequence() for details.
-		N          : int (optional)
-			Number of runs
-		axs     : (optional) an instance of plt.subplots()
-			plt axes where to plot the results
-
-		Returns
-		----------
-		u  : dict() (optional)
-			A dictionary encoding the predictions across the experiment conditions (keys); same 
-			structure as each of the sub-dicts of U produced by coin.initialise_experiments_U
-		x0  : np.array
-			field values for one of the runs; dim 0 is set to 1, dim 1 runs across time points, 
-			dim 2 is set to one. Useful for plotting.
-		"""
-
-		self.model.eval()
-
-		match experiment:
-			case 'consistency':
-				x = generate_field_sequence(experiment, self.sigma_r, 1, pStay=0.5)
-				nanix = torch.where(torch.isnan(x[0]))[0]
-				triplets = [ix for ix in nanix if ix+2 in nanix]
-				x0 = x[0, [t+1 for t in triplets], 0].detach().cpu()
-
-				pStayList, u = [0.1, 0.5, 0.9], dict()
-				for p in pStayList:
-					x = generate_field_sequence(experiment, self.sigma_r, N, pStay=p).to(self.dev)
-					u0 = self.run(x)[0].detach().cpu()
-					u[p] = torch.stack([u0[:, t+2, 0]-u0[:,t, 0] for t in triplets], axis=1).numpy()
-
-			case 'interference':
-				nPlusList, u = [0, 13, 41, 112, 230, 369], dict()
-				for nPlus in nPlusList:
-					x = generate_field_sequence(experiment, self.sigma_r, N, Np=nPlus).to(self.dev)
-					u[nPlus] = self.run(x)[0][:, (160+nPlus):, 0].detach().cpu().numpy()
-				x0 = x[0, 160+nPlus:, 0].detach().cpu().numpy()
-
-			case 'savings':
-				x = generate_field_sequence(experiment, self.sigma_r, N).to(self.dev)
-				u0 = self.run(x)[0].detach().cpu().numpy()
-				t0, t1, dur = 60, 60+125+15+50+50+60, 125
-				u = {'first': u0[:, t0:(t0+dur), 0], 'second': u0[:, t1:(t1+dur), 0]}
-				x0 = x[0, t0:(t0+dur), 0].detach().cpu().numpy()
-
-			case 'spontaneous' | 'evoked':
-				x = generate_field_sequence(experiment, self.sigma_r, N).to(self.dev)
-				u = {'data': self.run(x)[0][..., 0].detach().cpu().numpy()}
-				x0 = x[0, :, 0].detach().cpu().numpy()
-
-		if axs is not None:
-			coin.plot_experiment(x0, u, experiment, axs=axs)
-
-		return(u, x0)
-
-	def all_coin_experiments(self, N=20):
-		""" Computes the predictions of the wrapped nn.Module under the fields for all the experiments 
-			of the COIN paper that do not involve cue emissions.
-
-		Parameters
-		----------
-		N   : int (optional)
-			Number of runs
-
-		Returns
-		----------
-		U   : dict
-			Dictionary with np.arrays encoding the predictions hat{y}_t for the fields of each
-			experiment (keys); dim 0 runs across runs, dim 1 across time points, dim 2 set to one.
-		x0  : np.array
-			field values for one of the runs; dim 0 is set to 1, dim 1 runs across time points, 
-			dim 2 is set to one. Useful for plotting.
-		"""
-
-		experiments = ['spontaneous', 'evoked', 'savings', 'interference', 'consistency']
-		U, X0 = dict(), dict()
-		for exp in experiments:
-			U[exp], X0[exp] = self.run_experiment_coin(exp, N)
-
-		return U, X0
-
-	def summary_experiments(self, savefig=None, N=20, cmap="Greys", axs=None, eng=None):
-		""" Prints a figure withe the predictions of the wrapped nn.Module for all the experiments of 
-			the COIN paper.
-
-		Parameters
-		----------
-		savefig : str (optional)
-			Path where to store the figure (without extension). If savefig is not provided, 
-			results are plotted but not printed (not shown; use plt.show() for that).
-		N    : int (optional)
-			Number of runs.
-		cmap : (optional) string
-			mycolorpy.colorlistp colormap to use for the plots; e.g., 'Blues', 'Greens', etc
-		axs  : (optional) an np.array instance of plt.subplots()
-			plt axes where to plot the results
-		"""
-
-		U, X0 = self.all_coin_experiments(N)
-
-		if axs is None:
-			fig, axs = plt.subplots(1, 5)
-		else:
-			fig = None
-
-		for experiment, ax in zip(U, axs):
-			d[experiment] = coin.plot_experiment(U[experiment], experiment, ax, cmap)
-
-		if savefig is not None and fig is not None:
-			fig.subplots_adjust(left=0.05,right=0.98,bottom=0.17,top=0.9,wspace=0.3,hspace=0.3)
-			fig.set_size_inches(20, 3)
-			plt.savefig(f'{savefig}.png')
-
-
 
 def measure_KS_stat(x, u, s):
 	""" Measures the calibration (K-S statistic) of a prediction on a set of observations 
@@ -1433,11 +1022,12 @@ def plot_predictions(x, u, s, c=None, c_hat=None, c_pr=None, ax=None):
 	if context is None:
 		ax.plot(range(len(field)), field, color='tab:blue')
 	else:
-		nColCycles = int(np.ceil((max(max(context), max(c_pred)) + 1) / 10))
+		max_context_id = max(max(context), max(c_pred))
+		nColCycles = int(np.ceil((max_context_id + 1) / 10))
 		colours = list(matplotlib.colors.TABLEAU_COLORS.values()) * nColCycles
 		time = np.arange(len(field), dtype=int)
 
-		T = [0] + [t for t in range(1, len(field)) if (c[t]-c[t-1])!=0] + [len(field)-1]
+		T = [0] + [t for t in range(1, len(field)) if c[t] != c[t-1]] + [len(field)-1]
 		for t0, t1 in zip(T[:-1], T[1:]):
 			ax.plot(time[t0:(t1+1)], field[t0:(t1+1)], color = colours[context[t0]])
 			if c_hat is not None and c_pred[t0] != -1:
@@ -1449,30 +1039,6 @@ def plot_predictions(x, u, s, c=None, c_hat=None, c_pr=None, ax=None):
 		
 		ax.set_ylim([bottom - 0.1 * abs(bottom), top + 0.1 * abs(top)])
 		ax.set_xlim([0, len(field)])
-
-
-def generate_field_sequence(experiment, noise=0.03, batch_size=1, **kwargs):
-	""" Wrapper for coin.generate_field_sequence that returns a torch.tensor
-
-		Parameters
-		----------
-		experiment : str
-			Either 'evoked' (recovery), 'spontaneous' (recovery), 'savings', (retrograde) 
-			'interference', or (effect of environmental) 'consistency' (on learning rate)
-		noise      : float
-			standard deviation of the observation noise
-		batch_size : int
-			number of batches
-
-		Returns
-		-------
-		x  : torch.tensor
-			sequence of observations; dim 0 runs across batches, dim 1 across time points, dim 2 
-			is set to one for compatibility with pytorch
-	"""
-
-	x = torch.tensor(coin.generate_field_sequence(experiment, noise, batch_size, **kwargs)).float()
-	return(x)
 
 
 def numpyFlatten(z):
@@ -1537,138 +1103,4 @@ def find_latest(modname, pars=None):
 		return modpaths[-1].split('/')[-1]
 	else:
 		return None
-
-
-def summary_stats_fit(modkey, subs=None):
-	""" Prints a summary figure with the average prediction of all the models fitted to each of the 
-		subjects for all the experiments of the COIN paper that do not involve cue emissions. 
-
-		Parameters
-		----------
-		modkey : str
-			It assumes models were saved as f'pars-{sub}_{modkey}' where sub is the parset of 
-			each of the subjects (e.g., 'S1'). It will use modkey to find_latest to locate the 
-			latest (highest epoch) instance of the model corresponding to each subject in ./models.
-
-		subs   : str or list of str (optional)
-			Each string identifies a subject (e.g., 'S1') or a set of subjects (e.g., 'S'). If not
-			specified it uses all 'S' and 'E' subjects.
-	"""
-
-
-	if subs is None:
-		subs = list(coin.load_sub_pars(['S', 'E']).keys())
-
-	fig, axs = plt.subplots(4, len(subs))
-
-	for n, sub in enumerate(subs):
-
-		print(f'Plotting fits for subject {sub}')
-		# Recovering GM benchmarks
-		gm = coin.CRFGenerativeModel(sub)
-		benchmarks = gm.benchmark(n_trials=5000)
-
-		# Recovering model
-		modpath = sorted(glob.glob(f'./models/pars-{sub}_{modkey}*'))[-1]
-		m = Model()
-		m.load_weights(modpath)
-
-		# Estimating model predictions on the benchmarking samples
-		m.model.eval()
-		X, C = benchmarks['X'], benchmarks['C']
-		perf, u, s, c_hat, c_pr = m.benchmark(X, C)
-		m.model.train()
-
-		# Preparing plotbars
-		perf = {**{'gru': perf}, **benchmarks['perf']}
-		plotvec = dict()
-		for key in ['mse', 'kol', 'ce']:
-			plotvec[key] = dict()
-			for val in ['avg', 'sem']:
-				plotvec[key][val] = [perf[mod][key][val] for mod in ['LI', 'coin', 'gru']]
-
-		for key in ['ct_ac', 'ct_pr']:
-			plotvec[key] = dict()
-			for val in ['avg', 'sem']:
-				plotvec[key][val] = [perf[mod][key][val] for mod in ['coin', 'gru']]
-
-		# Plotting
-		colours = ['tab:purple', 'tab:green', 'tab:gray'] 
-		axs[0,n].bar([0, 1, 2], plotvec['mse']['avg'], yerr=plotvec['mse']['sem'], color=colours)
-		axs[0,n].set_xticks([0, 1, 2])
-		axs[0,n].set_xticklabels(['Leak-Int', 'COIN', 'GRU'])
-		axs[0,n].set_ylabel('mse')
-		axs[1,n].bar([0, 1, 2], plotvec['kol']['avg'], yerr=plotvec['kol']['sem'], color=colours)
-		axs[1,n].set_xticks([0, 1, 2])
-		axs[1,n].set_xticklabels(['Leak-Int', 'COIN', 'GRU'])
-		axs[1,n].set_ylabel('KS-stat')
-		
-		colours = ['tab:green', 'tab:gray'] 
-		axs[2,n].bar([0, 1], plotvec['ct_ac']['avg'], yerr=plotvec['ct_ac']['sem'], color=colours)
-		axs[2,n].set_xticks([0, 1])
-		axs[2,n].set_xticklabels(['COIN', 'GRU'])
-		axs[2,n].set_ylabel('ctx accuracy')
-		axs[3,n].bar( [0, 1], plotvec['ct_pr']['avg'],  yerr=plotvec['ct_pr']['sem'],  color=colours)
-		axs[3,n].set_xticks([0, 1])
-		axs[3,n].set_xticklabels(['COIN', 'GRU'])
-		axs[3,n].set_ylabel('ctx CE')
-
-		axs[0,n].set_title(f'{sub} (epoch {modpath.split("-")[-1].split(".")[0][1:]})')
-
-	txtspec = dict(ha='left', va='center', fontsize=12, color='tab:blue')
-	plt.text(-0.2, 1.3, modkey, rotation=0,  transform=axs[0,0].transAxes, **txtspec)
-	fig.subplots_adjust(left=0.02,right=0.98,bottom=0.05,top=0.9,wspace=0.45,hspace=0.4)
-	fig.set_size_inches(40, 8)
-	plt.savefig(f'summaryperformance-{modkey}.png')
-
-
-def estimate_subject_fits(modkey, subs=None):
-	""" Estimates the predictions of a model across a set of subjects for all the
-		experiments from the COIN paper that do not involve cue emissions. 
-
-		Parameters
-		----------
-		modkey : str
-			It assumes models were saved as f'pars-{sub}_{modkey}' where sub is the parset of 
-			each of the subjects (e.g., 'S1'). It will use modkey to find_latest to locate the 
-			latest (highest epoch) instance of the model corresponding to each subject in ./models.
-
-		subs   : str or list of str (optional)
-			Each string identifies a subject (e.g., 'S1') or a set of subjects (e.g., 'S'). If not
-			specified it uses all 'S' and 'E' subjects.
-
-		Returns
-		-------
-		U : dict()
-			A dictionary encoding the predictions across subjects and experiments; same structure 
-			as produced by coin.initialise_experiments_U
-	"""
-
-	if subs is None:
-		subs = ['S', 'E']
-
-	subs = list(coin.load_sub_pars(subs).keys())
-
-	U = coin.initialise_experiments_U(len(subs))
-
-	for s, sub in enumerate(subs):
-		print(sub)
-		m = Model()
-		#m.load_weights(find_latest(f'pars-{sub}_pretrained-baseline_{modkey}'))
-		m.load_weights(find_latest(f'modkey'))
-		Usub, X0 = m.all_coin_experiments()
-		for key in Usub:
-			if type(Usub[key]) is dict:
-				for subkey in U[key]:
-					U[key][subkey][s] = Usub[key][subkey].mean(0)
-			else:
-				U[key]['data'][s] = Usub[key].mean(0)
-
-	return U
-
-
-
-
-
-
 
