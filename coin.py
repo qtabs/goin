@@ -280,7 +280,7 @@ class GenerativeModel():
     Analysis: benchmark(), measure_ctx_transition_stats()
     """
 
-    def __init__(self, parset):
+    def __init__(self, parset, max_cores=None):
 
         self.pool = ProcessingPool()
 
@@ -291,11 +291,20 @@ class GenerativeModel():
             self.pars   = parset['pars']
             self.parset = parset['name']
 
+        # Set max_cores: use argument if provided, otherwise check pars, otherwise use os.cpu_count()
+        if max_cores is not None:
+            self.max_cores = max_cores
+        elif 'max_cores' in self.pars:
+            self.max_cores = self.pars['max_cores']
+        else:
+            import os
+            self.max_cores = os.cpu_count()
+
         # Initialize COIN inference engine
         self.coin_inference = COINInference(generative_params=self.pars)
 
         # Initialize leaky average inference engine
-        self.leaky_average_inference = LeakyAverageInference(generative_model=self, max_cores=self.pars.get('max_cores'))
+        self.leaky_average_inference = LeakyAverageInference(generative_model=self, max_cores=self.max_cores)
 
         self.si_q    = self.pars['si_q']
         self.si_r    = self.pars['si_r']
@@ -307,13 +316,7 @@ class GenerativeModel():
         self.alpha_t = self.pars['alpha_t']
         self.alpha_q = self.pars['alpha_q']
         self.rho_t   = self.pars['rho_t']
-        self.max_cores = self.pars['max_cores']
 
-    def __del__(self):
-        """Clean up ProcessingPool resources."""
-        if hasattr(self, 'pool') and self.pool is not None:
-            self.pool.close()
-            self.pool.join()
 
     # Auxiliary samplers
     def _sample_N_(self, mu, si, N=1):
