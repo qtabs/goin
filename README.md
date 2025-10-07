@@ -1,6 +1,23 @@
 This is a provisional repository for the GRU-COIN project. All code is provisional and unguaranteed.
 
-Contents
+## Installation
+
+Clone and setup in one command:
+```bash
+git clone <this-repo-url>
+cd goin
+./setup.sh
+```
+
+Or manually:
+```bash
+git clone <this-repo-url>
+cd goin
+cd .. && git clone https://github.com/qtabs/COIN_Python.git && cd goin
+pip install -r requirements.txt
+```
+
+## Contents
 coin.py : Generative model for the [COIN model](https://www.nature.com/articles/s41586-021-04129-3)
 	Provides for three main classes:
 		GenerativeModel() : Base class 

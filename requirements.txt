@@ -1,0 +1,15 @@
+# External dependency - COIN inference model
+# Note: COIN_Python is cloned to ../COIN_Python by setup.sh (not pip installable)
+
+# Core dependencies
+numpy
+scipy
+torch
+matplotlib
+tqdm
+pathos
+icecream
+
+# Additional dependencies
+pykalman
+seaborn
