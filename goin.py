@@ -373,8 +373,14 @@ class Model():
 			Probability of the predicted context; same shape and shiftings as u
 		"""
 
+		# Ensure x and c have 3 dimensions (batch, time, features)
+		if x.ndim == 2:
+			x = x[..., np.newaxis]
+		if c.ndim == 2:
+			c = c[..., np.newaxis]
+
 		nb, nt = x.shape[0], x.shape[1]
-		u, s = np.zeros(x.shape), np.zeros(x.shape) 
+		u, s = np.zeros(x.shape), np.zeros(x.shape)
 		l = np.zeros((x.shape[0], x.shape[1], self.model.out_lamb.out_features))
 
 		bunches = [(DEFAULT_BATCH_SIZE*n, min(DEFAULT_BATCH_SIZE*(n+1), x.shape[0])) for n in range(int(np.ceil(x.shape[0]/DEFAULT_BATCH_SIZE)))]
@@ -470,7 +476,7 @@ class Model():
 
 		# Setting up GM and benchmarks
 		gm = coin.GenerativeModel(parset)
-		benchmarks = gm.benchmark(n_trials, suffix='training')
+		benchmarks = gm.benchmark(n_trials, n_instances=32, suffix='training')
 		mse_target = benchmarks['perf']['coin']['mse']['avg']
 		mse_target += tolerance * benchmarks['perf']['coin']['mse']['sem']
 
@@ -556,7 +562,7 @@ class Model():
 
 		# Setting up GM and benchmarks
 		gm = coin.GenerativeModel(parset)
-		benchmarks = gm.benchmark(n_trials, suffix='training')
+		benchmarks = gm.benchmark(n_trials, n_instances=32, suffix='training')
 		acc_target = benchmarks['perf']['coin']['ct_ac']['avg']
 		acc_target += tolerance * benchmarks['perf']['coin']['ct_ac']['sem']
 
@@ -891,7 +897,8 @@ class Model():
 		ax_loss = fig.add_subplot(gs[3, 4:]) 
 
 		# Plotting a few examples
-		for n in range(len(ax_ex)):
+		n_examples = min(len(ax_ex), len(X))
+		for n in range(n_examples):
 			plot_predictions(X[n], u[n], s[n], C[n], c_hat[n], c_pr[n],  ax_ex[n])
 			
 
@@ -929,9 +936,13 @@ class Model():
 			trials = batch_res * np.arange(t0, t0 + len(lossHistory[e]))
 			ax_loss.plot(trials, np.array(lossHistory[e]), color=colours[(epoch0+e)%2])
 			t0 += len(lossHistory[e])
-		ymin = 0.2 * np.floor(5 * np.array(lossHistory).min()) - 0.2
-		ymax = 0.2 * min(25, 5 * np.ceil(np.array(lossHistory).max())) + 0.1
-		ax_loss.set_ylim([ymin, ymax])
+
+		# Set y-limits only if we have loss data
+		lh_flat = [loss for epoch in lossHistory for loss in epoch]
+		if len(lh_flat) > 0:
+			ymin = 0.2 * np.floor(5 * min(lh_flat)) - 0.2
+			ymax = 0.2 * min(25, 5 * np.ceil(max(lh_flat))) + 0.1
+			ax_loss.set_ylim([ymin, ymax])
 		ax_loss.set_xlabel('batch number')
 		ax_loss.set_ylabel('loss')
 
